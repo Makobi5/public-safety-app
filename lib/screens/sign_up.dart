@@ -1,4 +1,8 @@
+// lib/screens/sign_up.dart
+
 import 'package:flutter/material.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
+import '../service/auth_service.dart';
 import 'home_page.dart'; // Import to access LoginPage
 
 class SignUpPage extends StatefulWidget {
@@ -29,6 +33,10 @@ class _SignUpPageState extends State<SignUpPage> {
   // Password visibility
   bool _passwordVisible = false;
   bool _confirmPasswordVisible = false;
+  
+  // Loading and error states
+  bool _isLoading = false;
+  String? _errorMessage;
   
   // Password strength
   double _passwordStrength = 0.0;
@@ -144,6 +152,105 @@ class _SignUpPageState extends State<SignUpPage> {
     });
   }
 
+  // Add this method for Supabase registration
+  Future<void> _signUp() async {
+    if (!_formKey.currentState!.validate()) return;
+    
+    // Check if passwords match
+    if (_passwordController.text != _confirmPasswordController.text) {
+      setState(() {
+        _errorMessage = 'Passwords do not match';
+      });
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(_errorMessage!),
+          backgroundColor: Colors.red,
+        ),
+      );
+      return;
+    }
+    
+    // Validate location selections
+    if (_selectedRegion == null || _selectedDistrict == null || _selectedVillage == null) {
+      setState(() {
+        _errorMessage = 'Please select your region, district, and village';
+      });
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(_errorMessage!),
+          backgroundColor: Colors.red,
+        ),
+      );
+      return;
+    }
+    
+    setState(() {
+      _isLoading = true;
+      _errorMessage = null;
+    });
+
+    try {
+      // Register with Supabase
+      final response = await AuthService.signUp(
+        email: _emailController.text.trim(),
+        password: _passwordController.text,
+        userData: {
+          'first_name': _firstNameController.text.trim(),
+          'last_name': _lastNameController.text.trim(),
+          'region': _selectedRegion,
+          'district': _selectedDistrict,
+          'village': _selectedVillage,
+        },
+      );
+      
+      if (response.user != null) {
+        if (mounted) {
+          // Show success message
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('Account created successfully! Please verify your email and log in.'),
+              backgroundColor: Colors.green,
+            ),
+          );
+          
+          // Navigate to login page
+          Navigator.pushReplacement(
+            context,
+            MaterialPageRoute(builder: (context) => const LoginPage()),
+          );
+        }
+      }
+    } on AuthException catch (e) {
+      setState(() {
+        _errorMessage = e.message;
+      });
+      
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(_errorMessage!),
+          backgroundColor: Colors.red,
+        ),
+      );
+    } catch (e) {
+      setState(() {
+        _errorMessage = 'An unexpected error occurred. Please try again.';
+      });
+      
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(_errorMessage!),
+          backgroundColor: Colors.red,
+        ),
+      );
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isLoading = false;
+        });
+      }
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final screenSize = MediaQuery.of(context).size;
@@ -243,6 +350,22 @@ class _SignUpPageState extends State<SignUpPage> {
                             textAlign: TextAlign.center,
                           ),
                           const SizedBox(height: 24),
+                          
+                          // Show error message if there is one
+                          if (_errorMessage != null)
+                            Container(
+                              padding: const EdgeInsets.all(10),
+                              margin: const EdgeInsets.only(bottom: 20),
+                              decoration: BoxDecoration(
+                                color: Colors.red.shade100,
+                                borderRadius: BorderRadius.circular(8),
+                                border: Border.all(color: Colors.red.shade300),
+                              ),
+                              child: Text(
+                                _errorMessage!,
+                                style: TextStyle(color: Colors.red.shade800),
+                              ),
+                            ),
                           
                           // First Name Field
                           TextFormField(
@@ -580,26 +703,7 @@ class _SignUpPageState extends State<SignUpPage> {
                               width: isSmallScreen ? screenSize.width * 0.7 : screenSize.width * 0.5,
                               height: 50,
                               child: ElevatedButton(
-                                onPressed: () {
-                                  if (_formKey.currentState!.validate()) {
-                                    // Process signup data
-                                    // This is where you would typically call your authentication service
-                                    
-                                    // Show success message
-                                    ScaffoldMessenger.of(context).showSnackBar(
-                                      const SnackBar(
-                                        content: Text('Account created successfully! Please log in.'),
-                                        backgroundColor: Colors.green,
-                                      ),
-                                    );
-                                    
-                                    // Navigate to login page
-                                    Navigator.push(
-                                      context,
-                                      MaterialPageRoute(builder: (context) => const LoginPage()),
-                                    );
-                                  }
-                                },
+                                onPressed: _isLoading ? null : _signUp,
                                 style: ButtonStyle(
                                   backgroundColor: MaterialStateProperty.all(const Color(0xFF003366)),
                                   shape: MaterialStateProperty.all(
@@ -608,14 +712,23 @@ class _SignUpPageState extends State<SignUpPage> {
                                     ),
                                   ),
                                 ),
-                                child: const Text(
-                                  'Create Account',
-                                  style: TextStyle(
-                                    fontSize: 16,
-                                    fontWeight: FontWeight.bold,
-                                    color: Colors.white,
+                                child: _isLoading
+                                  ? const SizedBox(
+                                      height: 20,
+                                      width: 20,
+                                      child: CircularProgressIndicator(
+                                        color: Colors.white,
+                                        strokeWidth: 2,
+                                      ),
+                                    )
+                                  : const Text(
+                                    'Create Account',
+                                    style: TextStyle(
+                                      fontSize: 16,
+                                      fontWeight: FontWeight.bold,
+                                      color: Colors.white,
+                                    ),
                                   ),
-                                ),
                               ),
                             ),
                           ),

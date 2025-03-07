@@ -1,5 +1,9 @@
+// lib/screens/home_page.dart
+
 import 'package:flutter/material.dart';
 import 'sign_up.dart'; // Import SignUpPage
+import 'package:supabase_flutter/supabase_flutter.dart';
+import '../service/auth_service.dart';
 
 class HomePage extends StatefulWidget {
   const HomePage({Key? key}) : super(key: key);
@@ -13,11 +17,19 @@ class HomePage extends StatefulWidget {
 
 class _HomePageState extends State<HomePage> {
   final scaffoldKey = GlobalKey<ScaffoldState>();
+  bool _isAuthenticated = false;
 
   @override
   void initState() {
     super.initState();
+    _checkAuthentication();
     print("HomePage initState completed");
+  }
+
+  Future<void> _checkAuthentication() async {
+    setState(() {
+      _isAuthenticated = AuthService.isAuthenticated;
+    });
   }
 
   @override
@@ -40,6 +52,42 @@ class _HomePageState extends State<HomePage> {
         ),
         backgroundColor: const Color(0xFF003366),
         elevation: 0,
+        actions: [
+          if (_isAuthenticated)
+            IconButton(
+              icon: const Icon(Icons.account_circle),
+              onPressed: () {
+                Navigator.pushNamed(context, '/profile');
+              },
+              tooltip: 'Profile',
+            ),
+          IconButton(
+            icon: Icon(_isAuthenticated ? Icons.logout : Icons.login),
+            onPressed: () async {
+              if (_isAuthenticated) {
+                try {
+                  await AuthService.signOut();
+                  setState(() {
+                    _isAuthenticated = false;
+                  });
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(content: Text('Successfully logged out')),
+                  );
+                } catch (e) {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    SnackBar(content: Text('Error: ${e.toString()}')),
+                  );
+                }
+              } else {
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(builder: (context) => const LoginPage()),
+                );
+              }
+            },
+            tooltip: _isAuthenticated ? 'Sign Out' : 'Sign In',
+          ),
+        ],
       ),
       body: SafeArea(
         child: SingleChildScrollView(
@@ -162,16 +210,24 @@ class _HomePageState extends State<HomePage> {
                     child: ElevatedButton(
                       onPressed: () {
                         print("Get Started button pressed");
-                        try {
-                          Navigator.push(
-                            context, 
-                            MaterialPageRoute(builder: (context) => const AccountTypeSelectionPage())
-                          );
-                        } catch (e) {
-                          print("Error navigating: $e");
+                        if (_isAuthenticated) {
+                          // Navigate to the reporting screen if authenticated
                           ScaffoldMessenger.of(context).showSnackBar(
-                            SnackBar(content: Text('Navigation error: $e')),
+                            const SnackBar(content: Text('Navigate to reporting screen - will be implemented')),
                           );
+                        } else {
+                          // Navigate to account selection if not authenticated
+                          try {
+                            Navigator.push(
+                              context, 
+                              MaterialPageRoute(builder: (context) => const AccountTypeSelectionPage())
+                            );
+                          } catch (e) {
+                            print("Error navigating: $e");
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              SnackBar(content: Text('Navigation error: $e')),
+                            );
+                          }
                         }
                       },
                       style: ButtonStyle(
@@ -184,7 +240,7 @@ class _HomePageState extends State<HomePage> {
                         elevation: MaterialStateProperty.all(3),
                       ),
                       child: Text(
-                        'Get Started',
+                        _isAuthenticated ? 'Report Incident' : 'Get Started',
                         style: TextStyle(
                           fontSize: isSmallScreen ? 15 : 16,
                           fontWeight: FontWeight.bold,
@@ -456,14 +512,89 @@ class AccountTypeSelectionPage extends StatelessWidget {
 class LoginPage extends StatefulWidget {
   const LoginPage({super.key});
 
+  static const routeName = 'Login';
+  static const routePath = '/login';
+
   @override
   State<LoginPage> createState() => _LoginPageState();
 }
 
 class _LoginPageState extends State<LoginPage> {
   final _formKey = GlobalKey<FormState>();
+  final _emailController = TextEditingController();
+  final _passwordController = TextEditingController();
   bool _obscurePassword = true;
+  bool _isLoading = false;
+  String? _errorMessage;
   
+  @override
+  void dispose() {
+    _emailController.dispose();
+    _passwordController.dispose();
+    super.dispose();
+  }
+  
+  Future<void> _signIn() async {
+    if (!_formKey.currentState!.validate()) return;
+    
+    setState(() {
+      _isLoading = true;
+      _errorMessage = null;
+    });
+
+    try {
+      final response = await AuthService.signIn(
+        email: _emailController.text.trim(),
+        password: _passwordController.text,
+      );
+      
+      if (response.user != null) {
+        if (mounted) {
+          // Navigate to home page on successful login
+          Navigator.of(context).pushNamedAndRemoveUntil(
+            '/homepage', 
+            (route) => false
+          );
+          
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('Login successful!'),
+              backgroundColor: Colors.green,
+            ),
+          );
+        }
+      }
+    } on AuthException catch (e) {
+      setState(() {
+        _errorMessage = e.message;
+      });
+      
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(_errorMessage ?? 'An error occurred during login'),
+          backgroundColor: Colors.red,
+        ),
+      );
+    } catch (e) {
+      setState(() {
+        _errorMessage = 'An unexpected error occurred. Please try again.';
+      });
+      
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(_errorMessage!),
+          backgroundColor: Colors.red,
+        ),
+      );
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isLoading = false;
+        });
+      }
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final screenSize = MediaQuery.of(context).size;
@@ -514,8 +645,25 @@ class _LoginPageState extends State<LoginPage> {
                   ),
                   SizedBox(height: screenSize.height * 0.05),
                   
+                  // Show error message if there is one
+                  if (_errorMessage != null)
+                    Container(
+                      padding: const EdgeInsets.all(10),
+                      margin: const EdgeInsets.only(bottom: 20),
+                      decoration: BoxDecoration(
+                        color: Colors.red.shade100,
+                        borderRadius: BorderRadius.circular(8),
+                        border: Border.all(color: Colors.red.shade300),
+                      ),
+                      child: Text(
+                        _errorMessage!,
+                        style: TextStyle(color: Colors.red.shade800),
+                      ),
+                    ),
+                  
                   // Email Field
                   TextFormField(
+                    controller: _emailController,
                     decoration: InputDecoration(
                       labelText: 'Email',
                       hintText: 'Enter your email',
@@ -544,6 +692,7 @@ class _LoginPageState extends State<LoginPage> {
                   
                   // Password Field
                   TextFormField(
+                    controller: _passwordController,
                     obscureText: _obscurePassword,
                     decoration: InputDecoration(
                       labelText: 'Password',
@@ -583,9 +732,10 @@ class _LoginPageState extends State<LoginPage> {
                     alignment: Alignment.centerRight,
                     child: TextButton(
                       onPressed: () {
-                        // Forgot password functionality
-                        ScaffoldMessenger.of(context).showSnackBar(
-                          const SnackBar(content: Text('Password reset feature coming soon')),
+                        // Handle forgot password
+                        showDialog(
+                          context: context,
+                          builder: (context) => _buildForgotPasswordDialog(context),
                         );
                       },
                       child: const Text(
@@ -606,14 +756,7 @@ class _LoginPageState extends State<LoginPage> {
                       width: isSmallScreen ? screenSize.width * 0.7 : screenSize.width * 0.5,
                       height: isSmallScreen ? 46 : 52,
                       child: ElevatedButton(
-                        onPressed: () {
-                          if (_formKey.currentState!.validate()) {
-                            // Handle login
-                            ScaffoldMessenger.of(context).showSnackBar(
-                              const SnackBar(content: Text('Login functionality will be implemented soon')),
-                            );
-                          }
-                        },
+                        onPressed: _isLoading ? null : _signIn,
                         style: ButtonStyle(
                           backgroundColor: MaterialStateProperty.all(const Color(0xFF003366)),
                           shape: MaterialStateProperty.all(
@@ -623,14 +766,16 @@ class _LoginPageState extends State<LoginPage> {
                           ),
                           elevation: MaterialStateProperty.all(3),
                         ),
-                        child: const Text(
-                          'Login',
-                          style: TextStyle(
-                            fontSize: 15,
-                            fontWeight: FontWeight.bold,
-                            color: Colors.white,
-                          ),
-                        ),
+                        child: _isLoading
+                          ? const CircularProgressIndicator(color: Colors.white)
+                          : const Text(
+                              'Login',
+                              style: TextStyle(
+                                fontSize: 15,
+                                fontWeight: FontWeight.bold,
+                                color: Colors.white,
+                              ),
+                            ),
                       ),
                     ),
                   ),
@@ -653,10 +798,7 @@ class _LoginPageState extends State<LoginPage> {
                           // Navigate to registration
                           print("Register Now button pressed");
                           try {
-                            Navigator.push(
-                              context, 
-                              MaterialPageRoute(builder: (context) => const SignUpPage())
-                            );
+                            Navigator.pushNamed(context, 'SignUp');
                           } catch (e) {
                             print("Error navigating to SignUp: $e");
                             ScaffoldMessenger.of(context).showSnackBar(
@@ -681,6 +823,68 @@ class _LoginPageState extends State<LoginPage> {
           ),
         ),
       ),
+    );
+  }
+  
+  // Forgot password dialog
+  Widget _buildForgotPasswordDialog(BuildContext context) {
+    final emailController = TextEditingController();
+    
+    return AlertDialog(
+      title: const Text('Reset Password'),
+      content: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          const Text(
+            'Enter your email address and we\'ll send you a link to reset your password.',
+            style: TextStyle(fontSize: 14),
+          ),
+          const SizedBox(height: 16),
+          TextField(
+            controller: emailController,
+            decoration: const InputDecoration(
+              labelText: 'Email',
+              border: OutlineInputBorder(),
+            ),
+            keyboardType: TextInputType.emailAddress,
+          ),
+        ],
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(context),
+          child: const Text('Cancel'),
+        ),
+        ElevatedButton(
+          onPressed: () async {
+            final email = emailController.text.trim();
+            if (email.isNotEmpty) {
+              try {
+                await AuthService.resetPassword(email);
+                Navigator.pop(context);
+                
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(
+                    content: Text('Password reset email sent. Please check your inbox.'),
+                    backgroundColor: Colors.green,
+                  ),
+                );
+              } catch (e) {
+                ScaffoldMessenger.of(context).showSnackBar(
+                  SnackBar(
+                    content: Text('Error: ${e.toString()}'),
+                    backgroundColor: Colors.red,
+                  ),
+                );
+              }
+            }
+          },
+          style: ElevatedButton.styleFrom(
+            backgroundColor: const Color(0xFF003366),
+          ),
+          child: const Text('Send Reset Link'),
+        ),
+      ],
     );
   }
 }
