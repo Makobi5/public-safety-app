@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'sign_up.dart'; // Import SignUpPage
 import 'package:supabase_flutter/supabase_flutter.dart';
 import '../service/auth_service.dart';
+import 'forgot_password.dart'; // Import the ForgotPasswordPage
 
 class HomePage extends StatefulWidget {
   const HomePage({Key? key}) : super(key: key);
@@ -23,6 +24,21 @@ class _HomePageState extends State<HomePage> {
   void initState() {
     super.initState();
     _checkAuthentication();
+    
+    // Listen for auth state changes
+    Supabase.instance.client.auth.onAuthStateChange.listen((data) {
+      final AuthChangeEvent event = data.event;
+      if (event == AuthChangeEvent.signedIn) {
+        setState(() {
+          _isAuthenticated = true;
+        });
+      } else if (event == AuthChangeEvent.signedOut) {
+        setState(() {
+          _isAuthenticated = false;
+        });
+      }
+    });
+    
     print("HomePage initState completed");
   }
 
@@ -79,10 +95,7 @@ class _HomePageState extends State<HomePage> {
                   );
                 }
               } else {
-                Navigator.push(
-                  context,
-                  MaterialPageRoute(builder: (context) => const LoginPage()),
-                );
+                Navigator.pushNamed(context, 'Login');
               }
             },
             tooltip: _isAuthenticated ? 'Sign Out' : 'Sign In',
@@ -450,10 +463,7 @@ class AccountTypeSelectionPage extends StatelessWidget {
         child: InkWell(
           borderRadius: BorderRadius.circular(16),
           onTap: () {
-            Navigator.push(
-              context,
-              MaterialPageRoute(builder: (context) => const LoginPage())
-            );
+            Navigator.pushNamed(context, 'Login');
           },
           child: Padding(
             padding: const EdgeInsets.all(20),
@@ -732,10 +742,10 @@ class _LoginPageState extends State<LoginPage> {
                     alignment: Alignment.centerRight,
                     child: TextButton(
                       onPressed: () {
-                        // Handle forgot password
-                        showDialog(
-                          context: context,
-                          builder: (context) => _buildForgotPasswordDialog(context),
+                        // Navigate to ForgotPasswordPage instead of showing dialog
+                        Navigator.push(
+                          context,
+                          MaterialPageRoute(builder: (context) => const ForgotPasswordPage()),
                         );
                       },
                       child: const Text(
@@ -823,68 +833,6 @@ class _LoginPageState extends State<LoginPage> {
           ),
         ),
       ),
-    );
-  }
-  
-  // Forgot password dialog
-  Widget _buildForgotPasswordDialog(BuildContext context) {
-    final emailController = TextEditingController();
-    
-    return AlertDialog(
-      title: const Text('Reset Password'),
-      content: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          const Text(
-            'Enter your email address and we\'ll send you a link to reset your password.',
-            style: TextStyle(fontSize: 14),
-          ),
-          const SizedBox(height: 16),
-          TextField(
-            controller: emailController,
-            decoration: const InputDecoration(
-              labelText: 'Email',
-              border: OutlineInputBorder(),
-            ),
-            keyboardType: TextInputType.emailAddress,
-          ),
-        ],
-      ),
-      actions: [
-        TextButton(
-          onPressed: () => Navigator.pop(context),
-          child: const Text('Cancel'),
-        ),
-        ElevatedButton(
-          onPressed: () async {
-            final email = emailController.text.trim();
-            if (email.isNotEmpty) {
-              try {
-                await AuthService.resetPassword(email);
-                Navigator.pop(context);
-                
-                ScaffoldMessenger.of(context).showSnackBar(
-                  const SnackBar(
-                    content: Text('Password reset email sent. Please check your inbox.'),
-                    backgroundColor: Colors.green,
-                  ),
-                );
-              } catch (e) {
-                ScaffoldMessenger.of(context).showSnackBar(
-                  SnackBar(
-                    content: Text('Error: ${e.toString()}'),
-                    backgroundColor: Colors.red,
-                  ),
-                );
-              }
-            }
-          },
-          style: ElevatedButton.styleFrom(
-            backgroundColor: const Color(0xFF003366),
-          ),
-          child: const Text('Send Reset Link'),
-        ),
-      ],
     );
   }
 }
