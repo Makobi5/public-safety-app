@@ -152,7 +152,7 @@ class _SignUpPageState extends State<SignUpPage> {
     });
   }
 
-  // Add this method for Supabase registration
+  // Modified sign-up method to align with AuthService.dart
   Future<void> _signUp() async {
     if (!_formKey.currentState!.validate()) return;
     
@@ -190,17 +190,26 @@ class _SignUpPageState extends State<SignUpPage> {
     });
 
     try {
-      // Register with Supabase
+      // Prepare user data with proper field names matching the database columns
+      // Using the exact field names from AuthService.dart
+      final userData = {
+        'first_name': _firstNameController.text.trim(),
+        'last_name': _lastNameController.text.trim(),
+        'region': _selectedRegion,
+        'district': _selectedDistrict,
+        'village': _selectedVillage,
+      };
+      
+      // This debug info is useful for development
+      print("About to sign up with the following data:");
+      print("Email: ${_emailController.text.trim()}");
+      print("User data: $userData");
+      
+      // Call the AuthService.signUp method
       final response = await AuthService.signUp(
         email: _emailController.text.trim(),
         password: _passwordController.text,
-        userData: {
-          'first_name': _firstNameController.text.trim(),
-          'last_name': _lastNameController.text.trim(),
-          'region': _selectedRegion,
-          'district': _selectedDistrict,
-          'village': _selectedVillage,
-        },
+        userData: userData,
       );
       
       if (response.user != null) {
@@ -699,7 +708,7 @@ class _SignUpPageState extends State<SignUpPage> {
                           
                           // Create Account Button
                           Center(
-                            child: Container(
+                            child: SizedBox(
                               width: isSmallScreen ? screenSize.width * 0.7 : screenSize.width * 0.5,
                               height: 50,
                               child: ElevatedButton(

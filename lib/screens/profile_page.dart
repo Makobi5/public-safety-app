@@ -3,6 +3,7 @@
 import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import '../service/auth_service.dart';
+import 'edit_profile_screen.dart'; // Import the edit profile screen
 
 class ProfilePage extends StatefulWidget {
   const ProfilePage({Key? key}) : super(key: key);
@@ -42,6 +43,31 @@ class _ProfilePageState extends State<ProfilePage> {
         _errorMessage = 'Failed to load user profile: ${e.toString()}';
         _isLoading = false;
       });
+    }
+  }
+
+  Future<void> _navigateToEditProfile() async {
+    if (_userProfile == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Cannot edit profile: Profile data not loaded'),
+          backgroundColor: Colors.red,
+        ),
+      );
+      return;
+    }
+
+    // Navigate to the EditProfileScreen and await result
+    final result = await Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (context) => EditProfileScreen(userProfile: _userProfile!),
+      ),
+    );
+
+    // If profile was successfully updated, reload the profile data
+    if (result == true) {
+      _loadUserProfile();
     }
   }
 
@@ -273,14 +299,7 @@ class _ProfilePageState extends State<ProfilePage> {
                       // Edit profile button
                       Center(
                         child: ElevatedButton.icon(
-                          onPressed: () {
-                            // Navigate to edit profile page
-                            ScaffoldMessenger.of(context).showSnackBar(
-                              const SnackBar(
-                                content: Text('Edit profile feature will be added soon'),
-                              ),
-                            );
-                          },
+                          onPressed: _navigateToEditProfile, // Updated to use new navigation function
                           icon: const Icon(Icons.edit),
                           label: const Text('Edit Profile'),
                           style: ElevatedButton.styleFrom(
