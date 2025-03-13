@@ -8,6 +8,7 @@ import 'screens/sign_up.dart';
 import 'service/auth_service.dart';
 import 'screens/profile_page.dart';
 import 'screens/forgot_password.dart';
+import 'screens/incident_report_form.dart'; // Import the new incident report form
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -57,6 +58,8 @@ class MyApp extends StatelessWidget {
         'Login': (context) => const LoginPage(),
         '/profile': (context) => const ProfilePage(),
         '/forgot-password': (context) => const ForgotPasswordPage(),
+        'IncidentReport': (context) => const IncidentReportFormPage(), // Add the new route
+        '/incident-report': (context) => const IncidentReportFormPage(), // Alternative route path
       },
     );
   }

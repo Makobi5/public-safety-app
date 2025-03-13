@@ -5,6 +5,7 @@ import 'sign_up.dart'; // Import SignUpPage
 import 'package:supabase_flutter/supabase_flutter.dart';
 import '../service/auth_service.dart';
 import 'forgot_password.dart'; // Import the ForgotPasswordPage
+import 'incident_report_form.dart'; // Import the IncidentReportFormPage
 
 class HomePage extends StatefulWidget {
   const HomePage({Key? key}) : super(key: key);
@@ -222,12 +223,10 @@ class _HomePageState extends State<HomePage> {
                     height: isSmallScreen ? 48 : 56,
                     child: ElevatedButton(
                       onPressed: () {
-                        print("Get Started button pressed");
+                        print("Report Incident/Get Started button pressed");
                         if (_isAuthenticated) {
-                          // Navigate to the reporting screen if authenticated
-                          ScaffoldMessenger.of(context).showSnackBar(
-                            const SnackBar(content: Text('Navigate to reporting screen - will be implemented')),
-                          );
+                          // Navigate to the incident report form if authenticated
+                          Navigator.pushNamed(context, 'IncidentReport');
                         } else {
                           // Navigate to account selection if not authenticated
                           try {
