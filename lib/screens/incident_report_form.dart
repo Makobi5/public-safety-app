@@ -1,6 +1,10 @@
 // lib/screens/incident_report_form.dart
 
 import 'package:flutter/material.dart';
+import 'dart:io';
+import 'package:file_picker/file_picker.dart';
+import 'package:flutter/foundation.dart';
+import 'package:path/path.dart' as path;
 
 class IncidentReportFormPage extends StatefulWidget {
   const IncidentReportFormPage({Key? key}) : super(key: key);
@@ -206,7 +210,14 @@ class _IncidentReportFormPageState extends State<IncidentReportFormPage> {
   bool _isOtherVillage = false;
   
   // Evidence and submission data
-  List<String> _uploadedFiles = [];
+  List<PlatformFile> _uploadedFiles = [];
+  bool _isUploading = false;
+  final int _maxFileSizeInMB = 10;
+  final int _maxFiles = 5;
+  final List<String> _allowedExtensions = [
+    'jpg', 'jpeg', 'png', 'gif', 'mp4', 'mov', 'avi', 'mp3', 'wav', 'm4a'
+  ];
+  
   final _witnessInfoController = TextEditingController();
   final _additionalNotesController = TextEditingController();
   
@@ -283,6 +294,342 @@ class _IncidentReportFormPageState extends State<IncidentReportFormPage> {
   // Lists for dropdowns
   List<String> _districts = [];
   List<String> _villages = [];
+
+  // File upload methods
+  Future<void> _pickFiles() async {
+    try {
+      setState(() {
+        _isUploading = true;
+      });
+
+      FilePickerResult? result = await FilePicker.platform.pickFiles(
+        type: FileType.custom,
+        allowedExtensions: _allowedExtensions,
+        allowMultiple: true,
+      );
+
+      if (result != null) {
+        // Check if adding these files would exceed the limit
+        if (_uploadedFiles.length + result.files.length > _maxFiles) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text('You can upload a maximum of $_maxFiles files'),
+              backgroundColor: Colors.red,
+            ),
+          );
+          setState(() {
+            _isUploading = false;
+          });
+          return;
+        }
+
+        // Filter out files that exceed the size limit
+        List<PlatformFile> validFiles = [];
+        List<String> oversizedFiles = [];
+
+        for (var file in result.files) {
+          // Check file size (convert bytes to MB)
+          double fileSizeInMB = file.size / (1024 * 1024);
+          
+          if (fileSizeInMB <= _maxFileSizeInMB) {
+            validFiles.add(file);
+          } else {
+            oversizedFiles.add(file.name);
+          }
+        }
+
+        // Add valid files to the list
+        setState(() {
+          _uploadedFiles.addAll(validFiles);
+        });
+
+        // Show warning for oversized files
+        if (oversizedFiles.isNotEmpty) {
+          String fileNames = oversizedFiles.join(', ');
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text('Some files exceed the $_maxFileSizeInMB MB limit: $fileNames'),
+              backgroundColor: Colors.orange,
+            ),
+          );
+        }
+      }
+    } catch (e) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Error selecting files: $e'),
+          backgroundColor: Colors.red,
+        ),
+      );
+    } finally {
+      setState(() {
+        _isUploading = false;
+      });
+    }
+  }
+
+  // Determine the file type icon
+  IconData _getFileTypeIcon(String fileName) {
+    final extension = fileName.split('.').last.toLowerCase();
+    
+    if (['jpg', 'jpeg', 'png', 'gif'].contains(extension)) {
+      return Icons.image;
+    } else if (['mp4', 'mov', 'avi'].contains(extension)) {
+      return Icons.videocam;
+    } else if (['mp3', 'wav', 'm4a'].contains(extension)) {
+      return Icons.audio_file;
+    }
+    
+    return Icons.insert_drive_file;
+  }
+
+  // Get the file type label
+  String _getFileTypeLabel(String fileName) {
+    final extension = fileName.split('.').last.toLowerCase();
+    
+    if (['jpg', 'jpeg', 'png', 'gif'].contains(extension)) {
+      return 'Image';
+    } else if (['mp4', 'mov', 'avi'].contains(extension)) {
+      return 'Video';
+    } else if (['mp3', 'wav', 'm4a'].contains(extension)) {
+      return 'Audio';
+    }
+    
+    return 'File';
+  }
+
+  // Format the file size
+  String _formatFileSize(int bytes) {
+    if (bytes < 1024) {
+      return '$bytes B';
+    } else if (bytes < 1024 * 1024) {
+      return '${(bytes / 1024).toStringAsFixed(1)} KB';
+    } else {
+      return '${(bytes / (1024 * 1024)).toStringAsFixed(1)} MB';
+    }
+  }
+
+  // Build file upload section
+  Widget _buildFileUploadSection() {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: Colors.grey.shade200),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.center,
+        children: [
+          const Text(
+            'Upload Evidence',
+            style: TextStyle(
+              fontSize: 18,
+              fontWeight: FontWeight.bold,
+            ),
+            textAlign: TextAlign.center,
+          ),
+          const SizedBox(height: 16),
+          InkWell(
+            onTap: _isUploading ? null : _pickFiles,
+            child: Container(
+              width: double.infinity,
+              padding: const EdgeInsets.all(24),
+              decoration: BoxDecoration(
+                border: Border.all(color: Colors.grey.shade300),
+                borderRadius: BorderRadius.circular(8),
+                color: _isUploading ? Colors.grey.shade100 : Colors.white,
+              ),
+              child: Column(
+                children: [
+                  Container(
+                    padding: const EdgeInsets.all(16),
+                    decoration: BoxDecoration(
+                      color: _isUploading ? Colors.grey : const Color(0xFF003366),
+                      shape: BoxShape.circle,
+                    ),
+                    child: _isUploading
+                        ? const SizedBox(
+                            width: 24,
+                            height: 24,
+                            child: CircularProgressIndicator(
+                              strokeWidth: 2,
+                              valueColor: AlwaysStoppedAnimation<Color>(Colors.white),
+                            ),
+                          )
+                        : const Icon(
+                            Icons.cloud_upload,
+                            color: Colors.white,
+                            size: 32,
+                          ),
+                  ),
+                  const SizedBox(height: 16),
+                  Text(
+                    _isUploading
+                        ? 'Uploading...'
+                        : 'Tap to upload photos, videos, or audio',
+                    style: const TextStyle(
+                      fontWeight: FontWeight.w500,
+                    ),
+                  ),
+                  const SizedBox(height: 4),
+                  Text(
+                    'Maximum $_maxFiles files, ${_maxFileSizeInMB}MB each',
+                    style: TextStyle(
+                      fontSize: 12,
+                      color: Colors.grey.shade600,
+                    ),
+                  ),
+                  const SizedBox(height: 2),
+                  Text(
+                    'Supported formats: Images (jpg, png), Videos (mp4, mov), Audio (mp3, wav)',
+                    style: TextStyle(
+                      fontSize: 12,
+                      color: Colors.grey.shade600,
+                    ),
+                    textAlign: TextAlign.center,
+                  ),
+                ],
+              ),
+            ),
+          ),
+          
+          if (_uploadedFiles.isNotEmpty) ...[
+            const SizedBox(height: 16),
+            const Divider(),
+            const SizedBox(height: 8),
+            ListView.builder(
+              shrinkWrap: true,
+              physics: const NeverScrollableScrollPhysics(),
+              itemCount: _uploadedFiles.length,
+              itemBuilder: (context, index) {
+                final file = _uploadedFiles[index];
+                return Container(
+                  margin: const EdgeInsets.only(bottom: 8),
+                  padding: const EdgeInsets.all(8),
+                  decoration: BoxDecoration(
+                    color: Colors.grey.shade100,
+                    borderRadius: BorderRadius.circular(8),
+                    border: Border.all(color: Colors.grey.shade300),
+                  ),
+                  child: Row(
+                    children: [
+                      Container(
+                        width: 40,
+                        height: 40,
+                        decoration: BoxDecoration(
+                          color: const Color(0xFF003366).withOpacity(0.1),
+                          borderRadius: BorderRadius.circular(4),
+                        ),
+                        child: Icon(
+                          _getFileTypeIcon(file.name),
+                          color: const Color(0xFF003366),
+                          size: 24,
+                        ),
+                      ),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              file.name,
+                              style: const TextStyle(
+                                fontWeight: FontWeight.w500,
+                                fontSize: 14,
+                              ),
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                            const SizedBox(height: 2),
+                            Text(
+                              '${_getFileTypeLabel(file.name)} • ${_formatFileSize(file.size)}',
+                              style: TextStyle(
+                                fontSize: 12,
+                                color: Colors.grey.shade600,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                      IconButton(
+                        icon: const Icon(Icons.delete_outline, color: Colors.red),
+                        onPressed: () {
+                          setState(() {
+                            _uploadedFiles.removeAt(index);
+                          });
+                        },
+                        constraints: const BoxConstraints(
+                          minWidth: 40,
+                          minHeight: 40,
+                        ),
+                        padding: EdgeInsets.zero,
+                        splashRadius: 24,
+                      ),
+                    ],
+                  ),
+                );
+              },
+            ),
+            if (_uploadedFiles.length < _maxFiles) ...[
+              const SizedBox(height: 8),
+              TextButton.icon(
+                onPressed: _isUploading ? null : _pickFiles,
+                icon: const Icon(Icons.add_circle_outline),
+                label: Text('Add more files (${_uploadedFiles.length}/$_maxFiles)'),
+                style: TextButton.styleFrom(
+                  foregroundColor: const Color(0xFF003366),
+                ),
+              ),
+            ],
+            const SizedBox(height: 8),
+          ],
+        ],
+      ),
+    );
+  }
+
+  // Submit report method
+  void _submitReport() async {
+    if (_formKey.currentState!.validate()) {
+      // Show loading indicator
+      setState(() {
+        _isUploading = true;
+      });
+      
+      try {
+        // Here you would typically:
+        // 1. Upload files to your server
+        // 2. Get the URLs or IDs of the uploaded files
+        // 3. Submit the report with these references
+        
+        // This is a simulated delay for demonstration
+        await Future.delayed(const Duration(seconds: 2));
+        
+        // For demonstration, just show success
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Report submitted successfully with attached files'),
+            backgroundColor: Colors.green,
+          ),
+        );
+        
+        Navigator.pop(context);
+      } catch (e) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Error submitting report: $e'),
+            backgroundColor: Colors.red,
+          ),
+        );
+      } finally {
+        setState(() {
+          _isUploading = false;
+        });
+      }
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -390,8 +737,7 @@ class _IncidentReportFormPageState extends State<IncidentReportFormPage> {
                             fontSize: 16,
                             fontWeight: FontWeight.w500,
                           ),
-                        ),
-                        const SizedBox(height: 8),
+                        ),const SizedBox(height: 8),
                         TextFormField(
                           controller: _descriptionController,
                           decoration: InputDecoration(
@@ -779,122 +1125,7 @@ class _IncidentReportFormPageState extends State<IncidentReportFormPage> {
                         Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
-                            Container(
-                              width: double.infinity,
-                              padding: const EdgeInsets.all(16),
-                              decoration: BoxDecoration(
-                                color: Colors.white,
-                                borderRadius: BorderRadius.circular(8),
-                                border: Border.all(color: Colors.grey.shade200),
-                              ),
-                              child: Column(
-                                crossAxisAlignment: CrossAxisAlignment.center,
-                                children: [
-                                  const Text(
-                                    'Upload Evidence',
-                                    style: TextStyle(
-                                      fontSize: 18,
-                                      fontWeight: FontWeight.bold,
-                                    ),
-                                    textAlign: TextAlign.center,
-                                  ),
-                                  const SizedBox(height: 16),
-                                  InkWell(
-                                    onTap: () {
-                                      // Handle file upload
-                                      ScaffoldMessenger.of(context).showSnackBar(
-                                        const SnackBar(content: Text('File upload functionality will be implemented')),
-                                      );
-                                    },
-                                    child: Container(
-                                      width: double.infinity,
-                                      padding: const EdgeInsets.all(24),
-                                      decoration: BoxDecoration(
-                                        border: Border.all(color: Colors.grey.shade300),
-                                        borderRadius: BorderRadius.circular(8),
-                                      ),
-                                      child: Column(
-                                        children: [
-                                          Container(
-                                            padding: const EdgeInsets.all(16),
-                                            decoration: BoxDecoration(
-                                              color: const Color(0xFF003366),
-                                              shape: BoxShape.circle,
-                                            ),
-                                            child: const Icon(
-                                              Icons.cloud_upload,
-                                              color: Colors.white,
-                                              size: 32,
-                                            ),
-                                          ),
-                                          const SizedBox(height: 16),
-                                          const Text(
-                                            'Tap to upload photos or videos',
-                                            style: TextStyle(
-                                              fontWeight: FontWeight.w500,
-                                            ),
-                                          ),
-                                          const SizedBox(height: 4),
-                                          Text(
-                                            'Maximum 5 files, 10MB each',
-                                            style: TextStyle(
-                                              fontSize: 12,
-                                              color: Colors.grey.shade600,
-                                            ),
-                                          ),
-                                        ],
-                                      ),
-                                    ),
-                                  ),
-                                  
-                                  if (_uploadedFiles.isNotEmpty) ...[
-                                    const SizedBox(height: 16),
-                                    SingleChildScrollView(
-                                      scrollDirection: Axis.horizontal,
-                                      child: Row(
-                                        children: List.generate(
-                                          _uploadedFiles.length,
-                                          (index) => Container(
-                                            margin: const EdgeInsets.only(right: 8),
-                                            height: 70,
-                                            width: 70,
-                                            decoration: BoxDecoration(
-                                              color: Colors.grey.shade300,
-                                              borderRadius: BorderRadius.circular(4),
-                                            ),
-                                            child: Stack(
-                                              alignment: Alignment.center,
-                                              children: [
-                                                const Icon(Icons.image, size: 32, color: Colors.grey),
-                                                Positioned(
-                                                  top: 4,
-                                                  right: 4,
-                                                  child: InkWell(
-                                                    onTap: () {
-                                                      setState(() {
-                                                        _uploadedFiles.removeAt(index);
-                                                      });
-                                                    },
-                                                    child: Container(
-                                                      padding: const EdgeInsets.all(2),
-                                                      decoration: BoxDecoration(
-                                                        color: Colors.white.withOpacity(0.8),
-                                                        shape: BoxShape.circle,
-                                                      ),
-                                                      child: const Icon(Icons.close, size: 16, color: Colors.grey),
-                                                    ),
-                                                  ),
-                                                ),
-                                              ],
-                                            ),
-                                          ),
-                                        ),
-                                      ),
-                                    ),
-                                  ],
-                                ],
-                              ),
-                            ),
+                            _buildFileUploadSection(),
                             
                             const SizedBox(height: 20),
                             
@@ -1147,16 +1378,7 @@ class _IncidentReportFormPageState extends State<IncidentReportFormPage> {
                         Column(
                           children: [
                             ElevatedButton(
-                              onPressed: () {
-                                // Submit form
-                                if (_formKey.currentState!.validate()) {
-                                  // Process form submission
-                                  ScaffoldMessenger.of(context).showSnackBar(
-                                    const SnackBar(content: Text('Report submitted successfully')),
-                                  );
-                                  Navigator.pop(context);
-                                }
-                              },
+                              onPressed: _isUploading ? null : _submitReport,
                               style: ElevatedButton.styleFrom(
                                 backgroundColor: const Color(0xFF003366),
                                 padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 14),
