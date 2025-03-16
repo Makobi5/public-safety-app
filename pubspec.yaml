@@ -31,10 +31,10 @@ dependencies:
   flutter:
     sdk: flutter
   supabase_flutter: ^2.8.4
-  file_picker: ^5.3.1
+  file_picker: ^9.1.0
   path: ^1.8.3
   http: ^1.1.0  # For network uploads
-  mime: ^1.0.4  # For MIME type handling
+  mime: ^2.0.0  # For MIME type handling
 
 
   # The following adds the Cupertino Icons font to your application.

@@ -5,6 +5,9 @@ import 'dart:io';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/foundation.dart';
 import 'package:path/path.dart' as path;
+import 'dart:convert';
+import 'package:http/http.dart' as http;
+import 'package:http_parser/http_parser.dart';
 
 class IncidentReportFormPage extends StatefulWidget {
   const IncidentReportFormPage({Key? key}) : super(key: key);
@@ -295,6 +298,11 @@ class _IncidentReportFormPageState extends State<IncidentReportFormPage> {
   List<String> _districts = [];
   List<String> _villages = [];
 
+  // API endpoints
+  final String _fileUploadEndpoint = 'https://hkggxkyzyjptapnqbdlc.supabase.co/storage/v1/object/public/incident-files';
+  final String _incidentsEndpoint = 'https://hkggxkyzyjptapnqbdlc.supabase.co/rest/v1/incidents';
+  final String _authToken = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImhrZ2d4a3l6eWpwdGFwbnFiZGxjIiwicm9sZSI6ImFub24iLCJpYXQiOjE3MTU4NTI1NzgsImV4cCI6MjAzMTQyODU3OH0.eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9';
+
   // File upload methods
   Future<void> _pickFiles() async {
     try {
@@ -406,6 +414,101 @@ class _IncidentReportFormPageState extends State<IncidentReportFormPage> {
       return '${(bytes / 1024).toStringAsFixed(1)} KB';
     } else {
       return '${(bytes / (1024 * 1024)).toStringAsFixed(1)} MB';
+    }
+  }
+
+  // Method to upload a file to your server
+  Future<String> _uploadFile(PlatformFile file) async {
+    try {
+      // Create a multipart request
+      var request = http.MultipartRequest(
+        'POST',
+        Uri.parse(_fileUploadEndpoint),
+      );
+      
+      // Add the file to the request
+      request.files.add(
+        await http.MultipartFile.fromPath(
+          'file',
+          file.path!,
+          contentType: MediaType.parse(_getContentType(file.name)),
+        ),
+      );
+      
+      // Add any authentication headers if needed
+      request.headers['apikey'] = _authToken;
+      request.headers['Authorization'] = 'Bearer $_authToken';
+      
+      // Send the request
+      var response = await request.send();
+      
+      if (response.statusCode == 200 || response.statusCode == 201) {
+        // Parse the response to get the file URL
+        final responseBody = await response.stream.bytesToString();
+        final jsonResponse = json.decode(responseBody);
+        return jsonResponse['fileUrl']; // Adjust according to your API response
+      } else {
+        throw Exception('Failed to upload file: ${response.statusCode}');
+      }
+    } catch (e) {
+      // If file upload fails, return an error message that can be handled
+      return 'ERROR: $e';
+    }
+  }
+
+  // Method to determine content type based on file extension
+  String _getContentType(String fileName) {
+    final extension = fileName.split('.').last.toLowerCase();
+    
+    switch (extension) {
+      case 'jpg':
+      case 'jpeg':
+        return 'image/jpeg';
+      case 'png':
+        return 'image/png';
+      case 'gif':
+        return 'image/gif';
+      case 'mp4':
+        return 'video/mp4';
+      case 'mov':
+        return 'video/quicktime';
+      case 'avi':
+        return 'video/x-msvideo';
+      case 'mp3':
+        return 'audio/mpeg';
+      case 'wav':
+        return 'audio/wav';
+      case 'm4a':
+        return 'audio/m4a';
+      default:
+        return 'application/octet-stream';
+    }
+  }
+
+  // Method to save incident data to your database
+  Future<bool> _saveIncidentToDatabase(Map<String, dynamic> incidentData) async {
+    try {
+      final response = await http.post(
+        Uri.parse(_incidentsEndpoint),
+        headers: {
+          'Content-Type': 'application/json',
+          'apikey': _authToken,
+          'Authorization': 'Bearer $_authToken',
+          'Prefer': 'return=minimal'
+        },
+        body: json.encode(incidentData),
+      );
+      
+      if (response.statusCode == 200 || response.statusCode == 201) {
+        return true;
+      } else {
+        // Print error details for debugging
+        print('API Error: ${response.statusCode} - ${response.body}');
+        return false;
+      }
+    } catch (e) {
+      print('Error saving incident: $e');
+      return false;
     }
   }
 
@@ -590,7 +693,7 @@ class _IncidentReportFormPageState extends State<IncidentReportFormPage> {
     );
   }
 
-  // Submit report method
+  // Submit report method with API integration
   void _submitReport() async {
     if (_formKey.currentState!.validate()) {
       // Show loading indicator
@@ -599,28 +702,81 @@ class _IncidentReportFormPageState extends State<IncidentReportFormPage> {
       });
       
       try {
-        // Here you would typically:
-        // 1. Upload files to your server
-        // 2. Get the URLs or IDs of the uploaded files
-        // 3. Submit the report with these references
+        // 1. Upload files to server and get URLs
+        List<String> fileUrls = [];
         
-        // This is a simulated delay for demonstration
-        await Future.delayed(const Duration(seconds: 2));
+        if (_uploadedFiles.isNotEmpty)if (_uploadedFiles.isNotEmpty) {
+          // Show uploading files progress
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('Uploading files...'),
+              duration: Duration(seconds: 1),
+            ),
+          );
+          
+          for (var file in _uploadedFiles) {
+            String fileUrl = await _uploadFile(file);
+            
+            // Check if file upload failed
+            if (fileUrl.startsWith('ERROR:')) {
+              throw Exception('Failed to upload file: ${file.name}');
+            }
+            
+            fileUrls.add(fileUrl);
+          }
+        }
         
-        // For demonstration, just show success
+        // 2. Create incident data object
+        final String region = _selectedRegion == 'Other' ? _otherRegionController.text : _selectedRegion!;
+        final String district = _selectedDistrict == 'Other' ? _otherDistrictController.text : _selectedDistrict ?? '';
+        final String village = _selectedVillage == 'Other' ? _otherVillageController.text : _selectedVillage ?? '';
+        
+        Map<String, dynamic> incidentData = {
+          'user_id': 'current-user-id', // Replace with actual user ID from your auth system
+          'title': '${_selectedIncidentType ?? "Incident"} Report',
+          'description': _descriptionController.text,
+          'incident_type': _selectedIncidentType,
+          'region': region,
+          'district': district,
+          'village': village,
+          'landmark': _landmarkController.text,
+          'additional_location': _additionalLocationController.text,
+          'incident_date': _selectedDate != null ? _selectedDate!.toIso8601String() : null,
+          'incident_time': _selectedTime != null ? '${_selectedTime!.hour}:${_selectedTime!.minute}' : null,
+          'witness_info': _witnessInfoController.text,
+          'additional_notes': _additionalNotesController.text,
+          'file_urls': fileUrls,
+          'created_at': DateTime.now().toIso8601String(),
+        };
+        
+        // 3. Submit the incident data to the API
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
-            content: Text('Report submitted successfully with attached files'),
-            backgroundColor: Colors.green,
+            content: Text('Saving incident report...'),
+            duration: Duration(seconds: 1),
           ),
         );
         
-        Navigator.pop(context);
+        bool success = await _saveIncidentToDatabase(incidentData);
+        
+        if (success) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('Report submitted successfully'),
+              backgroundColor: Colors.green,
+            ),
+          );
+          Navigator.pop(context);
+        } else {
+          throw Exception('Failed to save incident to database');
+        }
       } catch (e) {
+        print('Error submitting report: $e');
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text('Error submitting report: $e'),
+            content: Text('Error submitting report: ${e.toString().length > 100 ? '${e.toString().substring(0, 100)}...' : e.toString()}'),
             backgroundColor: Colors.red,
+            duration: const Duration(seconds: 5),
           ),
         );
       } finally {
@@ -737,7 +893,8 @@ class _IncidentReportFormPageState extends State<IncidentReportFormPage> {
                             fontSize: 16,
                             fontWeight: FontWeight.w500,
                           ),
-                        ),const SizedBox(height: 8),
+                        ),
+                        const SizedBox(height: 8),
                         TextFormField(
                           controller: _descriptionController,
                           decoration: InputDecoration(
