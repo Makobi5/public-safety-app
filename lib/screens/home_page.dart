@@ -6,6 +6,7 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 import '../service/auth_service.dart';
 import 'forgot_password.dart'; // Import the ForgotPasswordPage
 import 'incident_report_form.dart'; // Import the IncidentReportFormPage
+import 'admin_dashboard.dart'; // Import the AdminDashboard
 
 class HomePage extends StatefulWidget {
   const HomePage({Key? key}) : super(key: key);
@@ -20,34 +21,44 @@ class HomePage extends StatefulWidget {
 class _HomePageState extends State<HomePage> {
   final scaffoldKey = GlobalKey<ScaffoldState>();
   bool _isAuthenticated = false;
+  bool _isAdmin = false;
 
-  @override
-  void initState() {
-    super.initState();
-    _checkAuthentication();
-    
-    // Listen for auth state changes
-    Supabase.instance.client.auth.onAuthStateChange.listen((data) {
-      final AuthChangeEvent event = data.event;
-      if (event == AuthChangeEvent.signedIn) {
-        setState(() {
-          _isAuthenticated = true;
-        });
-      } else if (event == AuthChangeEvent.signedOut) {
-        setState(() {
-          _isAuthenticated = false;
-        });
-      }
-    });
-    
-    print("HomePage initState completed");
-  }
+@override
+void initState() {
+  super.initState();
+  _checkAuthentication();
+  
+  // Listen for auth state changes
+  Supabase.instance.client.auth.onAuthStateChange.listen((data) {
+    final AuthChangeEvent event = data.event;
+    if (event == AuthChangeEvent.signedIn) {
+      setState(() {
+        _isAuthenticated = true;
+      });
+    } else if (event == AuthChangeEvent.signedOut) {
+      setState(() {
+        _isAuthenticated = false;
+      });
+    }
+  });
+  
+  print("HomePage initState completed");
+}
 
-  Future<void> _checkAuthentication() async {
-    setState(() {
-      _isAuthenticated = AuthService.isAuthenticated;
-    });
+Future<void> _checkAuthentication() async {
+  final isAuth = AuthService.isAuthenticated;
+  bool isAdmin = false;
+  
+  if (isAuth) {
+    isAdmin = await AuthService.isUserAdmin();
+    print("User is admin: $isAdmin"); // Add this debug log
   }
+  
+  setState(() {
+    _isAuthenticated = isAuth;
+    _isAdmin = isAdmin;
+  });
+}
 
   @override
   Widget build(BuildContext context) {
@@ -70,6 +81,14 @@ class _HomePageState extends State<HomePage> {
         backgroundColor: const Color(0xFF003366),
         elevation: 0,
         actions: [
+          if (_isAuthenticated && _isAdmin)
+            IconButton(
+              icon: const Icon(Icons.admin_panel_settings),
+              onPressed: () {
+                Navigator.pushNamed(context, 'AdminDashboard');
+              },
+              tooltip: 'Admin Dashboard',
+            ),
           if (_isAuthenticated)
             IconButton(
               icon: const Icon(Icons.account_circle),
@@ -86,6 +105,7 @@ class _HomePageState extends State<HomePage> {
                   await AuthService.signOut();
                   setState(() {
                     _isAuthenticated = false;
+                    _isAdmin = false;
                   });
                   ScaffoldMessenger.of(context).showSnackBar(
                     const SnackBar(content: Text('Successfully logged out')),
@@ -146,10 +166,12 @@ class _HomePageState extends State<HomePage> {
                       ),
                       const SizedBox(height: 12),
                       Text(
-                        'Keeping our community safe together',
+                        _isAdmin 
+                          ? 'Administrator Portal'
+                          : 'Keeping our community safe together',
                         style: TextStyle(
                           fontSize: isSmallScreen ? 16 : 18,
-                          color: Colors.grey[700],
+                          color: _isAdmin ? Colors.blue.shade700 : Colors.grey[700],
                           fontWeight: FontWeight.w500,
                         ),
                         textAlign: TextAlign.center,
@@ -157,6 +179,44 @@ class _HomePageState extends State<HomePage> {
                     ],
                   ),
                 ),
+                // Admin welcome message
+                if (_isAuthenticated && _isAdmin)
+                  Container(
+                    margin: const EdgeInsets.only(bottom: 24),
+                    padding: const EdgeInsets.all(16),
+                    decoration: BoxDecoration(
+                      color: Colors.blue.shade50,
+                      borderRadius: BorderRadius.circular(12),
+                      border: Border.all(color: Colors.blue.shade200),
+                    ),
+                    child: Column(
+                      children: [
+                        Row(
+                          children: [
+                            Icon(Icons.verified_user, color: Colors.blue.shade700),
+                            const SizedBox(width: 12),
+                            Expanded(
+                              child: Text(
+                                'Welcome, Administrator',
+                                style: TextStyle(
+                                  fontSize: 18,
+                                  fontWeight: FontWeight.bold,
+                                  color: Colors.blue.shade800,
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                        const SizedBox(height: 8),
+                        Text(
+                          'You have admin privileges. Access the Admin Dashboard to manage users and system settings.',
+                          style: TextStyle(
+                            color: Colors.blue.shade800,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
                 const SizedBox(height: 32),
                 Container(
                   width: double.infinity,
@@ -181,7 +241,9 @@ class _HomePageState extends State<HomePage> {
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
                       Text(
-                        'Report safety concerns and help create a safer neighborhood',
+                        _isAdmin
+                            ? 'Manage community safety reports and resources'
+                            : 'Report safety concerns and help create a safer neighborhood',
                         textAlign: TextAlign.center,
                         style: TextStyle(
                           fontSize: isSmallScreen ? 16 : 18,
@@ -190,29 +252,56 @@ class _HomePageState extends State<HomePage> {
                         ),
                       ),
                       const SizedBox(height: 24),
-                      FeatureItem(
-                        icon: Icons.assignment_turned_in,
-                        text: 'Report incidents easily',
-                        isSmallScreen: isSmallScreen,
-                      ),
-                      const SizedBox(height: 16),
-                      FeatureItem(
-                        icon: Icons.track_changes,
-                        text: 'Track your reports\' status',
-                        isSmallScreen: isSmallScreen,
-                      ),
-                      const SizedBox(height: 16),
-                      FeatureItem(
-                        icon: Icons.group_work,
-                        text: 'Support safety initiatives',
-                        isSmallScreen: isSmallScreen,
-                      ),
-                      const SizedBox(height: 16),
-                      FeatureItem(
-                        icon: Icons.notifications_active,
-                        text: 'Receive important alerts',
-                        isSmallScreen: isSmallScreen,
-                      ),
+                      // Show different feature items based on role
+                      if (_isAdmin) ...[
+                        FeatureItem(
+                          icon: Icons.dashboard,
+                          text: 'Access administrative tools',
+                          isSmallScreen: isSmallScreen,
+                        ),
+                        const SizedBox(height: 16),
+                        FeatureItem(
+                          icon: Icons.people,
+                          text: 'Manage user accounts',
+                          isSmallScreen: isSmallScreen,
+                        ),
+                        const SizedBox(height: 16),
+                        FeatureItem(
+                          icon: Icons.assessment,
+                          text: 'Review and respond to reports',
+                          isSmallScreen: isSmallScreen,
+                        ),
+                        const SizedBox(height: 16),
+                        FeatureItem(
+                          icon: Icons.settings,
+                          text: 'Configure system settings',
+                          isSmallScreen: isSmallScreen,
+                        ),
+                      ] else ...[
+                        FeatureItem(
+                          icon: Icons.assignment_turned_in,
+                          text: 'Report incidents easily',
+                          isSmallScreen: isSmallScreen,
+                        ),
+                        const SizedBox(height: 16),
+                        FeatureItem(
+                          icon: Icons.track_changes,
+                          text: 'Track your reports\' status',
+                          isSmallScreen: isSmallScreen,
+                        ),
+                        const SizedBox(height: 16),
+                        FeatureItem(
+                          icon: Icons.group_work,
+                          text: 'Support safety initiatives',
+                          isSmallScreen: isSmallScreen,
+                        ),
+                        const SizedBox(height: 16),
+                        FeatureItem(
+                          icon: Icons.notifications_active,
+                          text: 'Receive important alerts',
+                          isSmallScreen: isSmallScreen,
+                        ),
+                      ],
                     ],
                   ),
                 ),
@@ -223,10 +312,15 @@ class _HomePageState extends State<HomePage> {
                     height: isSmallScreen ? 48 : 56,
                     child: ElevatedButton(
                       onPressed: () {
-                        print("Report Incident/Get Started button pressed");
+                        print("Button pressed");
                         if (_isAuthenticated) {
-                          // Navigate to the incident report form if authenticated
-                          Navigator.pushNamed(context, 'IncidentReport');
+                          if (_isAdmin) {
+                            // Navigate to admin dashboard for admins
+                            Navigator.pushNamed(context, 'AdminDashboard');
+                          } else {
+                            // Navigate to incident report form for regular users
+                            Navigator.pushNamed(context, 'IncidentReport');
+                          }
                         } else {
                           // Navigate to account selection if not authenticated
                           try {
@@ -252,7 +346,9 @@ class _HomePageState extends State<HomePage> {
                         elevation: MaterialStateProperty.all(3),
                       ),
                       child: Text(
-                        _isAuthenticated ? 'Report Incident' : 'Get Started',
+                        _isAdmin 
+                            ? 'Admin Dashboard' 
+                            : (_isAuthenticated ? 'Report Incident' : 'Get Started'),
                         style: TextStyle(
                           fontSize: isSmallScreen ? 15 : 16,
                           fontWeight: FontWeight.bold,
@@ -263,32 +359,33 @@ class _HomePageState extends State<HomePage> {
                   ),
                 ),
                 SizedBox(height: screenSize.height * 0.03),
-                Center(
-                  child: Container(
-                    padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 20),
-                    decoration: BoxDecoration(
-                      color: Colors.red.shade50,
-                      borderRadius: BorderRadius.circular(8),
-                      border: Border.all(color: Colors.red.shade200, width: 1),
-                    ),
-                    child: Row(
-                      mainAxisSize: MainAxisSize.min,
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      children: [
-                        Icon(Icons.emergency, color: Colors.red.shade700, size: 16),
-                        const SizedBox(width: 6),
-                        Text(
-                          'Emergency? Call 999',
-                          style: TextStyle(
-                            fontSize: 14,
-                            fontWeight: FontWeight.bold,
-                            color: Colors.red.shade700,
+                if (!_isAdmin)
+                  Center(
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 20),
+                      decoration: BoxDecoration(
+                        color: Colors.red.shade50,
+                        borderRadius: BorderRadius.circular(8),
+                        border: Border.all(color: Colors.red.shade200, width: 1),
+                      ),
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          Icon(Icons.emergency, color: Colors.red.shade700, size: 16),
+                          const SizedBox(width: 6),
+                          Text(
+                            'Emergency? Call 999',
+                            style: TextStyle(
+                              fontSize: 14,
+                              fontWeight: FontWeight.bold,
+                              color: Colors.red.shade700,
+                            ),
                           ),
-                        ),
-                      ],
+                        ],
+                      ),
                     ),
                   ),
-                ),
               ],
             ),
           ),
@@ -417,6 +514,7 @@ class AccountTypeSelectionPage extends StatelessWidget {
                   description: 'Report incidents and track community safety initiatives',
                   icon: Icons.person,
                   isSmallScreen: isSmallScreen,
+                  isAdmin: false,
                 ),
                 
                 SizedBox(height: screenSize.height * 0.03),
@@ -428,6 +526,7 @@ class AccountTypeSelectionPage extends StatelessWidget {
                   description: 'Manage reports and coordinate response efforts',
                   icon: Icons.admin_panel_settings,
                   isSmallScreen: isSmallScreen,
+                  isAdmin: true,
                 ),
               ],
             ),
@@ -443,6 +542,7 @@ class AccountTypeSelectionPage extends StatelessWidget {
     required String description,
     required IconData icon,
     required bool isSmallScreen,
+    required bool isAdmin,
   }) {
     return Container(
       decoration: BoxDecoration(
@@ -462,7 +562,19 @@ class AccountTypeSelectionPage extends StatelessWidget {
         child: InkWell(
           borderRadius: BorderRadius.circular(16),
           onTap: () {
-            Navigator.pushNamed(context, 'Login');
+            if (isAdmin) {
+              // Navigate to admin login page
+              Navigator.push(
+                context,
+                MaterialPageRoute(builder: (context) => const LoginPage(isAdminLogin: true)),
+              );
+            } else {
+              // Navigate to regular login page
+              Navigator.push(
+                context,
+                MaterialPageRoute(builder: (context) => const LoginPage(isAdminLogin: false)),
+              );
+            }
           },
           child: Padding(
             padding: const EdgeInsets.all(20),
@@ -519,7 +631,12 @@ class AccountTypeSelectionPage extends StatelessWidget {
 }
 
 class LoginPage extends StatefulWidget {
-  const LoginPage({super.key});
+  final bool isAdminLogin;
+  
+  const LoginPage({
+    super.key, 
+    this.isAdminLogin = false // Default to regular user login
+  });
 
   static const routeName = 'Login';
   static const routePath = '/login';
@@ -552,25 +669,51 @@ class _LoginPageState extends State<LoginPage> {
     });
 
     try {
-      final response = await AuthService.signIn(
-        email: _emailController.text.trim(),
-        password: _passwordController.text,
-      );
-      
-      if (response.user != null) {
-        if (mounted) {
-          // Navigate to home page on successful login
-          Navigator.of(context).pushNamedAndRemoveUntil(
-            '/homepage', 
-            (route) => false
-          );
-          
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(
-              content: Text('Login successful!'),
-              backgroundColor: Colors.green,
-            ),
-          );
+      if (widget.isAdminLogin) {
+        // Admin login flow
+        final response = await AuthService.signInAsAdmin(
+          email: _emailController.text.trim(),
+          password: _passwordController.text,
+        );
+        
+        if (response.user != null) {
+          if (mounted) {
+            // Navigate to home page on successful login
+            Navigator.of(context).pushNamedAndRemoveUntil(
+              '/homepage', 
+              (route) => false
+            );
+            
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(
+                content: Text('Admin login successful!'),
+                backgroundColor: Colors.green,
+              ),
+            );
+          }
+        }
+      } else {
+        // Regular user login flow
+        final response = await AuthService.signIn(
+          email: _emailController.text.trim(),
+          password: _passwordController.text,
+        );
+        
+        if (response.user != null) {
+          if (mounted) {
+            // Navigate to home page on successful login
+            Navigator.of(context).pushNamedAndRemoveUntil(
+              '/homepage', 
+              (route) => false
+            );
+            
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(
+                content: Text('Login successful!'),
+                backgroundColor: Colors.green,
+              ),
+            );
+          }
         }
       }
     } on AuthException catch (e) {
@@ -611,9 +754,9 @@ class _LoginPageState extends State<LoginPage> {
     
     return Scaffold(
       appBar: AppBar(
-        title: const Text(
-          'Login',
-          style: TextStyle(
+        title: Text(
+          widget.isAdminLogin ? 'Admin Login' : 'Login',
+          style: const TextStyle(
             color: Colors.white,
             fontWeight: FontWeight.bold,
           ),
@@ -635,7 +778,7 @@ class _LoginPageState extends State<LoginPage> {
                 children: [
                   SizedBox(height: screenSize.height * 0.02),
                   Text(
-                    'Welcome Back',
+                    widget.isAdminLogin ? 'Admin Access' : 'Welcome Back',
                     style: TextStyle(
                       fontSize: isSmallScreen ? 24 : 28,
                       fontWeight: FontWeight.bold,
@@ -645,13 +788,40 @@ class _LoginPageState extends State<LoginPage> {
                   ),
                   const SizedBox(height: 12),
                   Text(
-                    'Login to continue to your account',
+                    widget.isAdminLogin 
+                      ? 'Login with administrator credentials'
+                      : 'Login to continue to your account',
                     style: TextStyle(
                       fontSize: isSmallScreen ? 15 : 17,
                       color: Colors.grey[700],
                     ),
                     textAlign: TextAlign.center,
                   ),
+                  
+                  // Show admin login notice if applicable
+                  if (widget.isAdminLogin)
+                    Container(
+                      margin: const EdgeInsets.only(top: 20),
+                      padding: const EdgeInsets.all(12),
+                      decoration: BoxDecoration(
+                        color: Colors.blue.shade50,
+                        borderRadius: BorderRadius.circular(8),
+                        border: Border.all(color: Colors.blue.shade200),
+                      ),
+                      child: Row(
+                        children: [
+                          Icon(Icons.info_outline, color: Colors.blue.shade700),
+                          const SizedBox(width: 8),
+                          Expanded(
+                            child: Text(
+                              'Note: Only authorized administrators can access this area. New admin accounts must be created by existing administrators.',
+                              style: TextStyle(color: Colors.blue.shade800),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  
                   SizedBox(height: screenSize.height * 0.05),
                   
                   // Show error message if there is one
@@ -767,7 +937,11 @@ class _LoginPageState extends State<LoginPage> {
                       child: ElevatedButton(
                         onPressed: _isLoading ? null : _signIn,
                         style: ButtonStyle(
-                          backgroundColor: MaterialStateProperty.all(const Color(0xFF003366)),
+                          backgroundColor: MaterialStateProperty.all(
+                            widget.isAdminLogin 
+                                ? Colors.indigo.shade700 
+                                : const Color(0xFF003366)
+                          ),
                           shape: MaterialStateProperty.all(
                             RoundedRectangleBorder(
                               borderRadius: BorderRadius.circular(10),
@@ -777,55 +951,70 @@ class _LoginPageState extends State<LoginPage> {
                         ),
                         child: _isLoading
                           ? const CircularProgressIndicator(color: Colors.white)
-                          : const Text(
-                              'Login',
-                              style: TextStyle(
+                          : Text(
+                              widget.isAdminLogin ? 'Admin Login' : 'Login',
+                              style: const TextStyle(
                                 fontSize: 15,
                                 fontWeight: FontWeight.bold,
                                 color: Colors.white,
                               ),
                             ),
-                      ),
-                    ),
+                      ),),
                   ),
                   
                   SizedBox(height: screenSize.height * 0.03),
                   
-                  // Register option
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    children: [
-                      Text(
-                        'Don\'t have an account?',
-                        style: TextStyle(
-                          color: Colors.grey[700],
-                          fontSize: 15,
-                        ),
-                      ),
-                      TextButton(
-                        onPressed: () {
-                          // Navigate to registration
-                          print("Register Now button pressed");
-                          try {
-                            Navigator.pushNamed(context, 'SignUp');
-                          } catch (e) {
-                            print("Error navigating to SignUp: $e");
-                            ScaffoldMessenger.of(context).showSnackBar(
-                              SnackBar(content: Text('Navigation error: $e')),
-                            );
-                          }
-                        },
-                        child: const Text(
-                          'Register Now',
+                  // Register option - only show for regular user login
+                  if (!widget.isAdminLogin)
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        Text(
+                          'Don\'t have an account?',
                           style: TextStyle(
-                            color: Color(0xFF003366),
-                            fontWeight: FontWeight.bold,
+                            color: Colors.grey[700],
                             fontSize: 15,
                           ),
                         ),
+                        TextButton(
+                          onPressed: () {
+                            // Navigate to registration
+                            print("Register Now button pressed");
+                            try {
+                              Navigator.pushNamed(context, 'SignUp');
+                            } catch (e) {
+                              print("Error navigating to SignUp: $e");
+                              ScaffoldMessenger.of(context).showSnackBar(
+                                SnackBar(content: Text('Navigation error: $e')),
+                              );
+                            }
+                          },
+                          child: const Text(
+                            'Register Now',
+                            style: TextStyle(
+                              color: Color(0xFF003366),
+                              fontWeight: FontWeight.bold,
+                              fontSize: 15,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                    
+                  // Admin instructions - only show for admin login
+                  if (widget.isAdminLogin)
+                    Padding(
+                      padding: const EdgeInsets.only(top: 16.0),
+                      child: Text(
+                        'For admin account requests, please contact an existing administrator.',
+                        style: TextStyle(
+                          color: Colors.grey[600],
+                          fontSize: 14,
+                          fontStyle: FontStyle.italic,
+                        ),
+                        textAlign: TextAlign.center,
                       ),
-                    ],
-                  ),
+                    ),
                 ],
               ),
             ),

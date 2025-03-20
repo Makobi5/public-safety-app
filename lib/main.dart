@@ -8,7 +8,8 @@ import 'screens/sign_up.dart';
 import 'service/auth_service.dart';
 import 'screens/profile_page.dart';
 import 'screens/forgot_password.dart';
-import 'screens/incident_report_form.dart'; // Import the new incident report form
+import 'screens/incident_report_form.dart'; // Import the incident report form
+import 'screens/admin_dashboard.dart'; // Import the new admin dashboard
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -55,11 +56,31 @@ class MyApp extends StatelessWidget {
         '/homepage': (context) => const HomePage(),
         'Homepage': (context) => const HomePage(),
         'SignUp': (context) => const SignUpPage(),
-        'Login': (context) => const LoginPage(),
+        'Login': (context) => const LoginPage(isAdminLogin: false), // Specify regular login
+        'AdminLogin': (context) => const LoginPage(isAdminLogin: true), // Add admin login route
         '/profile': (context) => const ProfilePage(),
         '/forgot-password': (context) => const ForgotPasswordPage(),
-        'IncidentReport': (context) => const IncidentReportFormPage(), // Add the new route
-        '/incident-report': (context) => const IncidentReportFormPage(), // Alternative route path
+        'IncidentReport': (context) => const IncidentReportFormPage(),
+        '/incident-report': (context) => const IncidentReportFormPage(),
+        'AdminDashboard': (context) => const AdminDashboard(), // Add admin dashboard route
+        '/admin-dashboard': (context) => const AdminDashboard(), // Alternative route path
+      },
+      // Add route generator for handling parameters in routes
+      onGenerateRoute: (settings) {
+        if (settings.name == 'Login') {
+          // Check if we're passing parameters to the login page
+          final args = settings.arguments;
+          if (args is Map<String, dynamic> && args.containsKey('isAdminLogin')) {
+            return MaterialPageRoute(
+              builder: (context) => LoginPage(isAdminLogin: args['isAdminLogin']),
+            );
+          }
+          // Default to regular login if no params
+          return MaterialPageRoute(
+            builder: (context) => const LoginPage(isAdminLogin: false),
+          );
+        }
+        return null;
       },
     );
   }
@@ -78,6 +99,7 @@ class AuthCheckRedirect extends StatefulWidget {
 class _AuthCheckRedirectState extends State<AuthCheckRedirect> {
   bool _isChecking = true;
   bool _isAuthenticated = false;
+  bool _isAdmin = false;
   
   @override
   void initState() {
@@ -90,16 +112,29 @@ class _AuthCheckRedirectState extends State<AuthCheckRedirect> {
   
   Future<void> _checkAuth() async {
     final isAuth = AuthService.isAuthenticated;
+    bool isAdmin = false;
+    
+    if (isAuth) {
+      // Check if the user is an admin
+      isAdmin = await AuthService.isUserAdmin();
+    }
     
     if (mounted) {
       setState(() {
         _isAuthenticated = isAuth;
+        _isAdmin = isAdmin;
         _isChecking = false;
       });
       
-      // If authenticated, redirect to home page
+      // If authenticated, redirect to appropriate page based on role
       if (_isAuthenticated) {
-        Navigator.of(context).pushReplacementNamed('Homepage');
+        if (_isAdmin) {
+          // For admin users, go to admin dashboard
+          Navigator.of(context).pushReplacementNamed('AdminDashboard');
+        } else {
+          // For regular users, go to home page
+          Navigator.of(context).pushReplacementNamed('Homepage');
+        }
       }
     }
   }
@@ -115,5 +150,40 @@ class _AuthCheckRedirectState extends State<AuthCheckRedirect> {
     }
     
     return widget.child;
+  }
+}
+
+// Add a helper class for role-based route access
+class RoleBasedRoute extends StatelessWidget {
+  final Widget adminRoute;
+  final Widget userRoute;
+  
+  const RoleBasedRoute({
+    Key? key,
+    required this.adminRoute,
+    required this.userRoute,
+  }) : super(key: key);
+  
+  @override
+  Widget build(BuildContext context) {
+    return FutureBuilder<bool>(
+      future: AuthService.isUserAdmin(),
+      builder: (context, snapshot) {
+        // While loading, show loading indicator
+        if (snapshot.connectionState == ConnectionState.waiting) {
+          return const Scaffold(
+            body: Center(child: CircularProgressIndicator()),
+          );
+        }
+        
+        // If user is admin, show admin route
+        if (snapshot.hasData && snapshot.data == true) {
+          return adminRoute;
+        }
+        
+        // Otherwise show user route
+        return userRoute;
+      },
+    );
   }
 }

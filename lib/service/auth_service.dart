@@ -14,6 +14,9 @@ class AuthService {
     print("Starting sign up process for email: $email");
     print("User data received: $userData");
     
+    // Add default role as 'user' for all regular sign-ups
+    userData['role'] = 'user';
+    
     try {
       // 1. Create the user in Supabase Auth
       final response = await supabase.auth.signUp(
@@ -86,6 +89,7 @@ class AuthService {
         'region': userData['region'] ?? '',
         'district': userData['district'] ?? '',
         'village': userData['village'] ?? '',
+        'role': userData['role'] ?? 'user', // Include role in profile
       };
       
       print("Inserting profile with data: $profileData");
@@ -116,6 +120,7 @@ class AuthService {
                 'region': userData['region'] ?? '',
                 'district': userData['district'] ?? '',
                 'village': userData['village'] ?? '',
+                'role': userData['role'] ?? 'user', // Include role parameter
               },
             );
             print("RPC function call result: $result");
@@ -155,6 +160,284 @@ class AuthService {
     }
     
     return response;
+  }
+  
+  // New method: Sign in as Admin
+// Updated signInAsAdmin method
+static Future<AuthResponse> signInAsAdmin({
+  required String email,
+  required String password,
+}) async {
+  // First authenticate the user
+  final response = await supabase.auth.signInWithPassword(
+    email: email,
+    password: password,
+  );
+  
+  // Then verify if the user is in the admins table
+  if (response.user != null) {
+    try {
+      // Use an RPC function instead of direct table access to avoid RLS issues
+      final isAdmin = await supabase.rpc(
+        'is_user_admin',
+        params: {'user_uuid': response.user!.id}
+      );
+      
+      if (isAdmin != true) {
+        await supabase.auth.signOut();
+        throw const AuthException(
+          'Not authorized: Admin credentials required.',
+        );
+      }
+    } catch (e) {
+      print("Error checking admin status: $e");
+      
+      // If the RPC function doesn't exist or fails, try a direct check with error handling
+      try {
+        final adminCount = await supabase.from('admins')
+          .select('*')
+          .eq('user_id', response.user!.id);
+        
+        if (adminCount.count == 0) {
+          await supabase.auth.signOut();
+          throw const AuthException(
+            'Not authorized: Admin credentials required.',
+          );
+        }
+      } catch (innerE) {
+        // If even the direct check fails, sign out and throw exception
+        await supabase.auth.signOut();
+        throw const AuthException(
+          'Error verifying admin credentials. Please try again.',
+        );
+      }
+    }
+  }
+  
+  return response;
+}
+  
+  // New method: Create Admin Account (can only be used by existing admins)
+  static Future<AuthResponse> createAdminAccount({
+    required String email,
+    required String password,
+    required Map<String, dynamic> userData,
+  }) async {
+    // Verify that the current user is an admin
+    if (!await isUserAdmin()) {
+      throw const AuthException(
+        'Not authorized: Only existing admins can create admin accounts.',
+      );
+    }
+    
+    try {
+      // Check if user already exists
+      final existingUser = await supabase.auth.admin
+        .getUserByEmail(email);
+        
+      String userId;
+      
+      if (existingUser != null) {
+        // User already exists
+        userId = existingUser.id;
+        print("User already exists with ID: $userId");
+      } else {
+        // Create a new user
+        final signUpResponse = await supabase.auth.signUp(
+          email: email,
+          password: password,
+          data: userData,
+        );
+        
+        if (signUpResponse.user == null) {
+          throw Exception("Failed to create user account");
+        }
+        
+        userId = signUpResponse.user!.id;
+        print("Created new user with ID: $userId");
+        
+        // Create user profile
+        await _createUserProfile(userId, userData);
+      }
+      
+      // Check if already an admin
+      final existingAdmin = await supabase
+        .from('admins')
+        .select()
+        .eq('user_id', userId)
+        .maybeSingle();
+        
+      if (existingAdmin != null) {
+        print("User is already an admin");
+        if (existingUser != null) {
+          // Return the response for existing user
+          return AuthResponse(
+            user: existingUser,
+            session: null,
+          );
+        }
+      } else {
+        // Add user to admins table
+        await supabase.from('admins').insert({
+          'user_id': userId,
+          'role': 'admin',
+        });
+        
+        print("Added user to admins table");
+      }
+      
+      // Return the appropriate response
+      if (existingUser != null) {
+        return AuthResponse(
+          user: existingUser,
+          session: null,
+        );
+      } else {
+        return AuthResponse(
+          user: supabase.auth.currentUser,
+          session: supabase.auth.currentSession,
+        );
+      }
+    } catch (e) {
+      print("Error in createAdminAccount: $e");
+      rethrow;
+    }
+  }
+  
+  // Method to add an existing user as admin
+  static Future<void> addExistingUserAsAdmin(String userId) async {
+    
+    // Verify current user is an admin
+    if (!await isUserAdmin()) {
+      throw const AuthException('Not authorized');
+    }
+    
+    try {
+      // Check if user exists
+      final userExists = await supabase
+        .from('user_profiles')
+        .select('user_id')
+        .eq('user_id', userId)
+        .maybeSingle();
+        
+      if (userExists == null) {
+        throw Exception("User not found");
+      }
+      
+      // Check if already an admin
+      final isAlreadyAdmin = await supabase
+        .from('admins')
+        .select()
+        .eq('user_id', userId)
+        .maybeSingle();
+        
+      if (isAlreadyAdmin != null) {
+        throw Exception("User is already an admin");
+      }
+      
+      // Add to admins table
+      await supabase
+        .from('admins')
+        .insert({
+          'user_id': userId,
+          'role': 'admin',
+        });
+    } catch (e) {
+      print("Error adding existing user as admin: $e");
+      rethrow;
+    }
+  }
+  
+  // New method: Check if current user is an admin
+static Future<bool> isUserAdmin() async {
+  if (currentUser == null) return false;
+  
+  try {
+    // Use the RPC function we created to check admin status
+    final isAdmin = await supabase.rpc(
+      'is_user_admin',
+      params: {'user_uuid': currentUser!.id}
+    );
+    
+    return isAdmin == true;
+  } catch (e) {
+    print("Error in RPC call: $e");
+    
+    // Fallback to direct check
+    try {
+      final adminRecord = await supabase
+        .from('admins')
+        .select()
+        .eq('user_id', currentUser!.id)
+        .single();
+      
+      return adminRecord != null;
+    } catch (fallbackError) {
+      print("Error checking admin status: $fallbackError");
+      return false;
+    }
+  }
+}
+  
+  // Get all regular users (for admin to select from)
+  static Future<List<Map<String, dynamic>>> getAllRegularUsers() async {
+    if (!await isUserAdmin()) {
+      throw const AuthException(
+        'Not authorized: Only admins can view all users.',
+      );
+    }
+    
+    try {
+      // Get all user profiles
+      final allUsers = await supabase
+        .from('user_profiles')
+        .select('*');
+      
+      // Get all admin user_ids
+      final adminUsers = await supabase
+        .from('admins')
+        .select('user_id');
+      
+      // Create a set of admin user_ids for faster lookup
+      final adminUserIds = Set<String>.from(
+        adminUsers.map((admin) => admin['user_id'] as String)
+      );
+      
+      // Filter out users who are already admins
+      return allUsers
+        .where((user) => !adminUserIds.contains(user['user_id']))
+        .toList();
+    } catch (e) {
+      print("Error fetching regular users: $e");
+      return [];
+    }
+  }
+  
+  // Remove admin privileges
+  static Future<void> removeAdminPrivileges(String userId) async {
+    // Verify current user is an admin
+    if (!await isUserAdmin()) {
+      throw const AuthException(
+        'Not authorized: Only admins can remove admin privileges.',
+      );
+    }
+    
+    // Prevent removing yourself
+    if (userId == currentUser!.id) {
+      throw Exception("You cannot remove your own admin privileges");
+    }
+    
+    try {
+      await supabase
+        .from('admins')
+        .delete()
+        .eq('user_id', userId);
+        
+      print("Admin privileges removed for user $userId");
+    } catch (e) {
+      print("Error removing admin privileges: $e");
+      rethrow;
+    }
   }
   
   // Sign Out method
@@ -242,4 +525,14 @@ class AuthService {
   // Get auth state changes stream
   static Stream<AuthState> get onAuthStateChange => 
       supabase.auth.onAuthStateChange;
+      
+        static get count => null;
+}
+
+extension on PostgrestList {
+  get count => null;
+}
+
+extension on GoTrueAdminApi {
+  getUserByEmail(String email) {}
 }
