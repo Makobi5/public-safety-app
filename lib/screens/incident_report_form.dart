@@ -895,12 +895,21 @@ Future<String> _uploadFile(PlatformFile file) async {
                                 return null;
                               },
                               items: [
-                                'Suspicious Activity',
+                                'Robbery',
                                 'Theft',
-                                'Vandalism',
-                                'Noise Complaint',
-                                'Traffic Issue',
-                                'Environmental Hazard',
+                                'Rape',
+                                'Defilement',
+                                'Sexual Assault',
+                                'Demestic Violence',
+                                'Murder',
+                                'Manslaughter',
+                                'Drug Abuse',
+                                'Kidnap',
+                                'Child Labour',
+                                'Cyber Crime',
+                                'Fraud and financial crimes',
+                                'Accident',
+                                'Fire outbreak',
                                 'Other'
                               ].map<DropdownMenuItem<String>>((String value) {
                                 return DropdownMenuItem<String>(
