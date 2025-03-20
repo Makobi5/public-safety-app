@@ -660,92 +660,107 @@ class _LoginPageState extends State<LoginPage> {
     super.dispose();
   }
   
-  Future<void> _signIn() async {
-    if (!_formKey.currentState!.validate()) return;
-    
-    setState(() {
-      _isLoading = true;
-      _errorMessage = null;
-    });
+// Update this method in your LoginPage class
 
-    try {
-      if (widget.isAdminLogin) {
-        // Admin login flow
-        final response = await AuthService.signInAsAdmin(
-          email: _emailController.text.trim(),
-          password: _passwordController.text,
-        );
-        
-        if (response.user != null) {
-          if (mounted) {
-            // Navigate to home page on successful login
-            Navigator.of(context).pushNamedAndRemoveUntil(
-              '/homepage', 
-              (route) => false
-            );
-            
-            ScaffoldMessenger.of(context).showSnackBar(
-              const SnackBar(
-                content: Text('Admin login successful!'),
-                backgroundColor: Colors.green,
-              ),
-            );
-          }
-        }
-      } else {
-        // Regular user login flow
-        final response = await AuthService.signIn(
-          email: _emailController.text.trim(),
-          password: _passwordController.text,
-        );
-        
-        if (response.user != null) {
-          if (mounted) {
-            // Navigate to home page on successful login
-            Navigator.of(context).pushNamedAndRemoveUntil(
-              '/homepage', 
-              (route) => false
-            );
-            
-            ScaffoldMessenger.of(context).showSnackBar(
-              const SnackBar(
-                content: Text('Login successful!'),
-                backgroundColor: Colors.green,
-              ),
-            );
-          }
+// Update the _signIn method in _LoginPageState class
+
+Future<void> _signIn() async {
+  if (!_formKey.currentState!.validate()) return;
+  
+  setState(() {
+    _isLoading = true;
+    _errorMessage = null;
+  });
+
+  try {
+    if (widget.isAdminLogin) {
+      // Admin login flow
+      final response = await AuthService.signInAsAdmin(
+        email: _emailController.text.trim(),
+        password: _passwordController.text,
+      );
+      
+      if (response.user != null) {
+        if (mounted) {
+          // Navigate to admin dashboard on successful admin login
+          Navigator.of(context).pushNamedAndRemoveUntil(
+            'AdminDashboard', 
+            (route) => false
+          );
+          
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('Admin login successful!'),
+              backgroundColor: Colors.green,
+            ),
+          );
         }
       }
-    } on AuthException catch (e) {
-      setState(() {
-        _errorMessage = e.message;
-      });
-      
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(_errorMessage ?? 'An error occurred during login'),
-          backgroundColor: Colors.red,
-        ),
+    } else {
+      // Regular user login flow
+      final response = await AuthService.signIn(
+        email: _emailController.text.trim(),
+        password: _passwordController.text,
       );
-    } catch (e) {
-      setState(() {
-        _errorMessage = 'An unexpected error occurred. Please try again.';
-      });
       
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(_errorMessage!),
-          backgroundColor: Colors.red,
-        ),
-      );
-    } finally {
-      if (mounted) {
-        setState(() {
-          _isLoading = false;
-        });
+      if (response.user != null) {
+        if (mounted) {
+          // Check if user is admin (some admins might try to login through regular user flow)
+          final isAdmin = await AuthService.isUserAdmin();
+          
+          // Navigate based on user role
+          if (isAdmin) {
+            Navigator.of(context).pushNamedAndRemoveUntil(
+              'AdminDashboard', 
+              (route) => false
+            );
+          } else {
+            // Navigate to user dashboard for regular users
+            Navigator.of(context).pushNamedAndRemoveUntil(
+              'UserDashboard', 
+              (route) => false
+            );
+          }
+          
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('Login successful!'),
+              backgroundColor: Colors.green,
+            ),
+          );
+        }
       }
     }
+  } on AuthException catch (e) {
+    setState(() {
+      _errorMessage = e.message;
+    });
+    
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(_errorMessage ?? 'An error occurred during login'),
+        backgroundColor: Colors.red,
+      ),
+    );
+  } catch (e) {
+    setState(() {
+      _errorMessage = 'An unexpected error occurred. Please try again.';
+    });
+    
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(_errorMessage!),
+        backgroundColor: Colors.red,
+      ),
+    );
+  } finally {
+    if (mounted) {
+      setState(() {
+        _isLoading = false;
+      });
+    }
   }
+}
 
   @override
   Widget build(BuildContext context) {

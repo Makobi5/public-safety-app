@@ -9,7 +9,8 @@ import 'service/auth_service.dart';
 import 'screens/profile_page.dart';
 import 'screens/forgot_password.dart';
 import 'screens/incident_report_form.dart'; // Import the incident report form
-import 'screens/admin_dashboard.dart'; // Import the new admin dashboard
+import 'screens/admin_dashboard.dart'; // Import the admin dashboard
+import 'screens/user_dashboard.dart'; // Import the new user dashboard
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -57,13 +58,15 @@ class MyApp extends StatelessWidget {
         'Homepage': (context) => const HomePage(),
         'SignUp': (context) => const SignUpPage(),
         'Login': (context) => const LoginPage(isAdminLogin: false), // Specify regular login
-        'AdminLogin': (context) => const LoginPage(isAdminLogin: true), // Add admin login route
+        'AdminLogin': (context) => const LoginPage(isAdminLogin: true), // Admin login route
         '/profile': (context) => const ProfilePage(),
         '/forgot-password': (context) => const ForgotPasswordPage(),
         'IncidentReport': (context) => const IncidentReportFormPage(),
         '/incident-report': (context) => const IncidentReportFormPage(),
-        'AdminDashboard': (context) => const AdminDashboard(), // Add admin dashboard route
+        'AdminDashboard': (context) => const AdminDashboard(), // Admin dashboard route
         '/admin-dashboard': (context) => const AdminDashboard(), // Alternative route path
+        'UserDashboard': (context) => const UserDashboard(), // Add user dashboard route
+        '/user-dashboard': (context) => const UserDashboard(), // Alternative route path
       },
       // Add route generator for handling parameters in routes
       onGenerateRoute: (settings) {
@@ -132,8 +135,8 @@ class _AuthCheckRedirectState extends State<AuthCheckRedirect> {
           // For admin users, go to admin dashboard
           Navigator.of(context).pushReplacementNamed('AdminDashboard');
         } else {
-          // For regular users, go to home page
-          Navigator.of(context).pushReplacementNamed('Homepage');
+          // For regular users, go to user dashboard instead of homepage
+          Navigator.of(context).pushReplacementNamed('UserDashboard');
         }
       }
     }
