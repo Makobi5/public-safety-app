@@ -3,6 +3,12 @@
 import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import '../service/auth_service.dart';
+import 'case_detail_screen.dart';
+import 'package:pdf/pdf.dart';
+import 'package:pdf/widgets.dart' as pw;
+import 'package:path_provider/path_provider.dart';
+//import 'package:share_plus/share_plus.dart';
+import 'dart:io';
 
 class AdminDashboard extends StatefulWidget {
   const AdminDashboard({Key? key}) : super(key: key);
@@ -33,6 +39,7 @@ class _AdminDashboardState extends State<AdminDashboard> {
   String emergencyLevel = 'Low';
   
   List<Map<String, dynamic>> recentReports = [];
+  List<Map<String, dynamic>> recentActivities = [];
   
   @override
   void initState() {
@@ -101,9 +108,14 @@ class _AdminDashboardState extends State<AdminDashboard> {
             'district': incident['district'] ?? 'Unknown Location',
             'time': formattedTime,
             'priority': _getIncidentPriority(incident['incident_type']),
+            'status': incident['status'] ?? 'Pending',
           };
         }).toList();
       }
+      
+      // Fetch recent activities
+      await _fetchRecentActivity();
+      
     } catch (e) {
       print('Error fetching dashboard data: $e');
       ScaffoldMessenger.of(context).showSnackBar(
@@ -116,6 +128,29 @@ class _AdminDashboardState extends State<AdminDashboard> {
       setState(() {
         _isLoading = false;
       });
+    }
+  }
+  
+  // Fetch recent activities for the dashboard
+  Future<void> _fetchRecentActivity() async {
+    try {
+      // Get Supabase client
+      final supabase = Supabase.instance.client;
+      
+      // Fetch recent activity from incident_activity table
+      final response = await supabase
+          .from('incident_activity')
+          .select('*, incidents!inner(incident_type)')
+          .order('created_at', ascending: false)
+          .limit(5);
+      
+      if (response != null && response is List) {
+        // Process data for activity log display
+        recentActivities = response.cast<Map<String, dynamic>>();
+        print('Recent activity fetched: ${recentActivities.length} entries');
+      }
+    } catch (e) {
+      print('Error fetching recent activity: $e');
     }
   }
   
@@ -221,6 +256,143 @@ class _AdminDashboardState extends State<AdminDashboard> {
       default:
         return Colors.grey;
     }
+  }
+  
+  void _exportDistrictActivityMap() async {
+    try {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Generating district activity report...'),
+        ),
+      );
+      
+      // Create PDF document
+      final pdf = pw.Document();
+      
+      // Add content to PDF
+      pdf.addPage(
+        pw.Page(
+          pageFormat: PdfPageFormat.a4,
+          build: (pw.Context context) {
+            return pw.Column(
+              crossAxisAlignment: pw.CrossAxisAlignment.start,
+              children: [
+                pw.Text(
+                  'District Activity Report',
+                  style: pw.TextStyle(
+                    fontSize: 24,
+                    fontWeight: pw.FontWeight.bold,
+                  ),
+                ),
+                pw.SizedBox(height: 20),
+                pw.Text(
+                  'Generated on: ${DateTime.now().toString().substring(0, 16)}',
+                  style: const pw.TextStyle(
+                    fontSize: 12,
+                  ),
+                ),
+                pw.SizedBox(height: 20),
+                pw.Table(
+                  border: pw.TableBorder.all(),
+                  children: [
+                    pw.TableRow(
+                      children: [
+                        pw.Padding(
+                          padding: const pw.EdgeInsets.all(8),
+                          child: pw.Text(
+                            'District',
+                            style: pw.TextStyle(fontWeight: pw.FontWeight.bold),
+                          ),
+                        ),
+                        pw.Padding(
+                          padding: const pw.EdgeInsets.all(8),
+                          child: pw.Text(
+                            'Total Incidents',
+                            style: pw.TextStyle(fontWeight: pw.FontWeight.bold),
+                          ),
+                        ),
+                        pw.Padding(
+                          padding: const pw.EdgeInsets.all(8),
+                          child: pw.Text(
+                            'Critical Incidents',
+                            style: pw.TextStyle(fontWeight: pw.FontWeight.bold),
+                          ),
+                        ),
+                      ],
+                    ),
+                    // Sample data rows - in a real implementation, you would
+                    // populate this with data from your database
+                    ..._generateDistrictRows(),
+                  ],
+                ),
+              ],
+            );
+          },
+        ),
+      );
+      
+      // Save the PDF document
+      final tempDir = await getTemporaryDirectory();
+      final file = File('${tempDir.path}/district_activity_report.pdf');
+      await file.writeAsBytes(await pdf.save());
+      
+      // Share the PDF file
+      ScaffoldMessenger.of(context).showSnackBar(
+  SnackBar(
+    content: Text('PDF saved to: ${file.path}'),
+    duration: const Duration(seconds: 5),
+    action: SnackBarAction(
+      label: 'OK',
+      onPressed: () {},
+    ),
+  ),
+);
+      
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('District activity report exported successfully!'),
+          backgroundColor: Colors.green,
+        ),
+      );
+    } catch (e) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Error exporting report: $e'),
+          backgroundColor: Colors.red,
+        ),
+      );
+    }
+  }
+  
+  List<pw.TableRow> _generateDistrictRows() {
+    // In a real implementation, you would aggregate incident data by district
+    // This is just sample data
+    final districts = [
+      {'name': 'Kabale', 'total': 12, 'critical': 4},
+      {'name': 'Kampala', 'total': 25, 'critical': 8},
+      {'name': 'Entebbe', 'total': 8, 'critical': 2},
+      {'name': 'Jinja', 'total': 15, 'critical': 5},
+      {'name': 'Mbarara', 'total': 10, 'critical': 3},
+    ];
+    
+    return districts.map((district) {
+      return pw.TableRow(
+        children: [
+          pw.Padding(
+            padding: const pw.EdgeInsets.all(8),
+            child: pw.Text(district['name'].toString()),
+          ),
+          pw.Padding(
+            padding: const pw.EdgeInsets.all(8),
+            child: pw.Text(district['total'].toString()),
+          ),
+          pw.Padding(
+            padding: const pw.EdgeInsets.all(8),
+            child: pw.Text(district['critical'].toString()),
+          ),
+        ],
+      );
+    }).toList();
   }
 
   @override
@@ -396,14 +568,7 @@ class _AdminDashboardState extends State<AdminDashboard> {
                           ),
                         ),
                         ElevatedButton.icon(
-                          onPressed: () {
-                            // Export PDF functionality
-                            ScaffoldMessenger.of(context).showSnackBar(
-                              const SnackBar(
-                                content: Text('Exporting district activity map...'),
-                              ),
-                            );
-                          },
+                          onPressed: _exportDistrictActivityMap,
                           style: ElevatedButton.styleFrom(
                             backgroundColor: const Color(0xFF003366),
                             shape: RoundedRectangleBorder(
@@ -531,53 +696,78 @@ class _AdminDashboardState extends State<AdminDashboard> {
   }
 
   Widget _buildReportItem(Map<String, dynamic> report) {
-    return Container(
-      margin: const EdgeInsets.only(bottom: 12),
-      padding: const EdgeInsets.all(12),
-      decoration: BoxDecoration(
-        color: Colors.grey.shade50,
-        borderRadius: BorderRadius.circular(8),
-        border: Border.all(color: Colors.grey.shade200),
-      ),
-      child: Row(
-        children: [
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
+    return InkWell(
+      onTap: () {
+        // Navigate to case detail screen
+        Navigator.push(
+          context,
+          MaterialPageRoute(
+            builder: (context) => CaseDetailScreen(
+              incidentId: report['id'],
+            ),
+          ),
+        ).then((_) {
+          // Refresh dashboard data when returning from case detail
+          _fetchDashboardData();
+        });
+      },
+      child: Container(
+        margin: const EdgeInsets.only(bottom: 12),
+        padding: const EdgeInsets.all(12),
+        decoration: BoxDecoration(
+          color: Colors.grey.shade50,
+          borderRadius: BorderRadius.circular(8),
+          border: Border.all(color: Colors.grey.shade200),
+        ),
+        child: Row(
+          children: [
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    report['title'],
+                    style: const TextStyle(
+                      fontWeight: FontWeight.bold,
+                      fontSize: 16,
+                    ),
+                  ),
+                  const SizedBox(height: 4),
+                  Text(
+                    '${report['district']}   ${report['time']}',
+                    style: TextStyle(
+                      color: Colors.grey.shade700,
+                      fontSize: 14,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            Row(
               children: [
-                Text(
-                  report['title'],
-                  style: const TextStyle(
-                    fontWeight: FontWeight.bold,
-                    fontSize: 16,
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                  decoration: BoxDecoration(
+                    color: _getPriorityColor(report['priority']),
+                    borderRadius: BorderRadius.circular(20),
+                  ),
+                  child: Text(
+                    '${report['priority']} Priority',
+                    style: TextStyle(
+                      color: _getPriorityTextColor(report['priority']),
+                      fontWeight: FontWeight.bold,
+                    ),
                   ),
                 ),
-                const SizedBox(height: 4),
-                Text(
-                  '${report['district']}   ${report['time']}',
-                  style: TextStyle(
-                    color: Colors.grey.shade700,
-                    fontSize: 14,
-                  ),
+                const SizedBox(width: 8),
+                Icon(
+                  Icons.chevron_right,
+                  color: Colors.grey.shade400,
                 ),
               ],
             ),
-          ),
-          Container(
-            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-            decoration: BoxDecoration(
-              color: _getPriorityColor(report['priority']),
-              borderRadius: BorderRadius.circular(20),
-            ),
-            child: Text(
-              '${report['priority']} Priority',
-              style: TextStyle(
-                color: _getPriorityTextColor(report['priority']),
-                fontWeight: FontWeight.bold,
-              ),
-            ),
-          ),
-        ],
+          ],
+        ),
       ),
     );
   }
