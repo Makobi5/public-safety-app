@@ -38,6 +38,7 @@ class _CaseDetailScreenState extends State<CaseDetailScreen> {
   // Status options for dropdown
   final List<String> _statusOptions = [
     'Pending',
+    'Filed',
     'Under Investigation',
     'Action Taken',
     'Resolved',
