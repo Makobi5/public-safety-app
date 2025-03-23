@@ -38,7 +38,7 @@ dependencies:
   intl: ^0.20.2  # Replace ^latest_version with actual version
   pdf: ^3.11.3   # Replace ^latest_version with actual version
   printing: ^5.14.2  # Replace ^latest_version with actual version
-  path_provider: ^2.1.5  # Replace ^latest_version with actual version
+  path_provider: ^2.0.0 # Replace ^latest_version with actual version
   cupertino_icons: ^1.0.8
   share_plus: ^10.1.4
   # The following adds the Cupertino Icons font to your application.

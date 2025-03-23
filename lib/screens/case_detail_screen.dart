@@ -395,194 +395,160 @@ Widget _buildInfoRow(String label, String value) {
 
     // Build PDF content
     pdf.addPage(
-      pw.MultiPage(
-        pageFormat: PdfPageFormat.a4,
-        margin: const pw.EdgeInsets.all(32),
-        header: (pw.Context context) {
-          return pw.Container(
-            alignment: pw.Alignment.centerRight,
-            margin: const pw.EdgeInsets.only(bottom: 20),
-            child: pw.Column(
-              crossAxisAlignment: pw.CrossAxisAlignment.start,
-              children: [
-                pw.Row(
-                  mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
-                  children: [
-                    pw.Text('PUBLIC SAFETY SYSTEM',
-                        style: pw.TextStyle(
-                            fontSize: 28, fontWeight: pw.FontWeight.bold)),
-                    pw.Text('CASE REPORT',
-                        style: pw.TextStyle(
-                            fontSize: 24, fontWeight: pw.FontWeight.bold)),
-                  ],
-                ),
-                pw.Divider(thickness: 2),
-              ],
-            ),
-          );
-        },
-        footer: (pw.Context context) {
-          return pw.Container(
-            alignment: pw.Alignment.centerRight,
-            margin: const pw.EdgeInsets.only(top: 20),
-            child: pw.Row(
+  pw.MultiPage(
+    pageFormat: PdfPageFormat.a4,
+    margin: const pw.EdgeInsets.all(32),
+    header: (pw.Context context) {
+      // Your existing header code
+        return pw.Container(
+    alignment: pw.Alignment.centerRight,
+    margin: const pw.EdgeInsets.only(bottom: 20),
+    child: pw.Column(
+      crossAxisAlignment: pw.CrossAxisAlignment.start,
+      children: [
+        pw.Row(
+          mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
+          children: [
+            pw.Text('PUBLIC SAFETY SYSTEM',
+                style: pw.TextStyle(
+                    fontSize: 28, fontWeight: pw.FontWeight.bold)),
+            pw.Text('CASE REPORT',
+                style: pw.TextStyle(
+                    fontSize: 24, fontWeight: pw.FontWeight.bold)),
+          ],
+        ),
+        pw.Divider(thickness: 2),
+      ],
+    ),
+  );
+    },
+    footer: (pw.Context context) {
+      return pw.Container(
+    alignment: pw.Alignment.centerRight,
+    margin: const pw.EdgeInsets.only(top: 20),
+    child: pw.Row(
+      mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
+      children: [
+        pw.Text('Generated on: $dateFormatted',
+            style: const pw.TextStyle(fontSize: 10)),
+        pw.Text('Page ${context.pageNumber} of ${context.pagesCount}',
+            style: const pw.TextStyle(fontSize: 10)),
+      ],
+    ),
+  );
+      // Your existing footer code
+    },
+    build: (pw.Context context) => [
+      // Case Summary Section
+      pw.Container(
+        padding: const pw.EdgeInsets.all(16),
+        decoration: pw.BoxDecoration(
+          border: pw.Border.all(),
+          borderRadius: const pw.BorderRadius.all(pw.Radius.circular(10)),
+        ),
+        child: pw.Column(
+          crossAxisAlignment: pw.CrossAxisAlignment.start,
+          children: [
+            pw.Text('CASE SUMMARY',
+                style: pw.TextStyle(
+                    fontSize: 18, fontWeight: pw.FontWeight.bold)),
+            pw.SizedBox(height: 10),
+            pw.Row(
               mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
               children: [
-                pw.Text('Generated on: $dateFormatted',
-                    style: const pw.TextStyle(fontSize: 10)),
-                pw.Text('Page ${context.pageNumber} of ${context.pagesCount}',
-                    style: const pw.TextStyle(fontSize: 10)),
+                pw.Expanded(
+                  flex: 1,
+                  child: pw.Text('Case ID:',
+                      style: pw.TextStyle(fontWeight: pw.FontWeight.bold)),
+                ),
+                pw.Expanded(
+                  flex: 2,
+                  child: pw.Text(widget.incidentId),
+                ),
               ],
             ),
-          );
-        },
-        build: (pw.Context context) => [
-          pw.Container(
-            padding: const pw.EdgeInsets.all(16),
-            decoration: pw.BoxDecoration(
-              border: pw.Border.all(),
-              borderRadius: const pw.BorderRadius.all(pw.Radius.circular(10)),
-            ),
-            child: pw.Column(
-              crossAxisAlignment: pw.CrossAxisAlignment.start,
+            pw.SizedBox(height: 5),
+            pw.Row(
+              mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
               children: [
-                pw.Text('CASE SUMMARY',
-                    style: pw.TextStyle(
-                        fontSize: 18, fontWeight: pw.FontWeight.bold)),
-                pw.SizedBox(height: 10),
-                pw.Row(
-                  mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
-                  children: [
-                    pw.Expanded(
-                      flex: 1,
-                      child: pw.Text('Case ID:',
-                          style: pw.TextStyle(fontWeight: pw.FontWeight.bold)),
-                    ),
-                    pw.Expanded(
-                      flex: 2,
-                      child: pw.Text(widget.incidentId),
-                    ),
-                  ],
+                pw.Expanded(
+                  flex: 1,
+                  child: pw.Text('Incident Type:',
+                      style: pw.TextStyle(fontWeight: pw.FontWeight.bold)),
                 ),
-                pw.SizedBox(height: 5),
-                pw.Row(
-                  mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
-                  children: [
-                    pw.Expanded(
-                      flex: 1,
-                      child: pw.Text('Incident Type:',
-                          style: pw.TextStyle(fontWeight: pw.FontWeight.bold)),
-                    ),
-                    pw.Expanded(
-                      flex: 2,
-                      child: pw.Text(_incidentData?.containsKey('incident_type') == true ? 
-                          (_incidentData!['incident_type'] ?? 'N/A') : 'N/A'),
-                    ),
-                  ],
-                ),
-                pw.SizedBox(height: 5),
-                pw.Row(
-                  mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
-                  children: [
-                    pw.Expanded(
-                      flex: 1,
-                      child: pw.Text('Status:',
-                          style: pw.TextStyle(fontWeight: pw.FontWeight.bold)),
-                    ),
-                    pw.Expanded(
-                      flex: 2,
-                      child: pw.Text(_incidentData?.containsKey('status') == true ? 
-                          (_incidentData!['status'] ?? 'Pending') : 'Pending'),
-                    ),
-                  ],
-                ),
-                pw.SizedBox(height: 5),
-                pw.Row(
-                  mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
-                  children: [
-                    pw.Expanded(
-                      flex: 1,
-                      child: pw.Text('Priority:',
-                          style: pw.TextStyle(fontWeight: pw.FontWeight.bold)),
-                    ),
-                    pw.Expanded(
-                      flex: 2,
-                      child: pw.Text(_incidentData?.containsKey('priority') == true ? 
-                          (_incidentData!['priority'] ?? 'Medium') : 'Medium'),
-                    ),
-                  ],
-                ),
-                pw.SizedBox(height: 5),
-                pw.Row(
-                  mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
-                  children: [
-                    pw.Expanded(
-                      flex: 1,
-                      child: pw.Text('Date Reported:',
-                          style: pw.TextStyle(fontWeight: pw.FontWeight.bold)),
-                    ),
-                    pw.Expanded(
-                      flex: 2,
-                      child: pw.Text(_incidentData != null && _incidentData!.containsKey('created_at')
-                          ? DateTime.parse(_incidentData!['created_at'])
-                              .toString()
-                              .substring(0, 16)
-                          : 'N/A'),
-                    ),
-                  ],
+                pw.Expanded(
+                  flex: 2,
+                  child: pw.Text(_incidentData?.containsKey('incident_type') == true ? 
+                      (_incidentData!['incident_type'] ?? 'N/A') : 'N/A'),
                 ),
               ],
             ),
-          ),
-          pw.SizedBox(height: 20),
-          pw.Container(
-            padding: const pw.EdgeInsets.all(16),
-            decoration: pw.BoxDecoration(
-              border: pw.Border.all(),
-              borderRadius: const pw.BorderRadius.all(pw.Radius.circular(10)),
-            ),
-            child: pw.Column(
-              crossAxisAlignment: pw.CrossAxisAlignment.start,
-              children: [
-                pw.Text('INCIDENT DESCRIPTION',
-                    style: pw.TextStyle(
-                        fontSize: 18, fontWeight: pw.FontWeight.bold)),
-                pw.SizedBox(height: 10),
-                pw.Text(_incidentData?.containsKey('description') == true ? 
-                    (_incidentData!['description'] ?? 'No description provided') : 
-                    'No description provided'),
-              ],
-            ),
-          ),
-        ],
-      ),
-    );
-
-    // Save the PDF document
-    final tempDir = await getTemporaryDirectory();
-    final file = File(
-        '${tempDir.path}/case_report_${widget.incidentId.substring(0, widget.incidentId.length > 8 ? 8 : widget.incidentId.length)}.pdf');
-    await file.writeAsBytes(await pdf.save());
-
-    // Show success message with the file path
-    setState(() {
-      _successMessage = 'Case report generated and saved!';
-    });
-    
-    // Show a snackbar with the file location
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text('PDF saved to: ${file.path}'),
-        duration: const Duration(seconds: 5),
-        action: SnackBarAction(
-          label: 'Open',
-          onPressed: () async {
-            // If you want to add functionality to open the file, 
-            // you would need to add url_launcher package and implement it here
-          },
+            // Add more rows for other case details
+          ],
         ),
       ),
-    );
+      pw.SizedBox(height: 20),
+      // Description Section
+      pw.Container(
+        padding: const pw.EdgeInsets.all(16),
+        decoration: pw.BoxDecoration(
+          border: pw.Border.all(),
+          borderRadius: const pw.BorderRadius.all(pw.Radius.circular(10)),
+        ),
+        child: pw.Column(
+          crossAxisAlignment: pw.CrossAxisAlignment.start,
+          children: [
+            pw.Text('INCIDENT DESCRIPTION',
+                style: pw.TextStyle(
+                    fontSize: 18, fontWeight: pw.FontWeight.bold)),
+            pw.SizedBox(height: 10),
+            pw.Text(_incidentData?.containsKey('description') == true ? 
+                (_incidentData!['description'] ?? 'No description provided') : 
+                'No description provided'),
+          ],
+        ),
+      ),
+    ],
+  ),
+);
+
+    // Save the PDF document - platform-agnostic approach
+    try {
+      // Generate the PDF bytes
+      final bytes = await pdf.save();
+      
+      // Try to save to file if path_provider is available
+      try {
+        final tempDir = await getTemporaryDirectory();
+        final file = File(
+            '${tempDir.path}/case_report_${widget.incidentId.substring(0, widget.incidentId.length > 8 ? 8 : widget.incidentId.length)}.pdf');
+        await file.writeAsBytes(bytes);
+
+        // Show success message with the file path
+        setState(() {
+          _successMessage = 'Case report generated and saved!';
+        });
+        
+        // Show a snackbar with the file location
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('PDF saved to: ${file.path}'),
+            duration: const Duration(seconds: 5),
+          ),
+        );
+      } catch (fileError) {
+        // If file saving fails, still consider it a success since we generated the PDF
+        setState(() {
+          _successMessage = 'PDF generated but could not be saved to a file.';
+        });
+        print('Error saving to file: $fileError');
+      }
+    } catch (e) {
+      setState(() {
+        _errorMessage = 'Error saving PDF: $e';
+      });
+      print('Error saving PDF: $e');
+    }
   } catch (e) {
     setState(() {
       _errorMessage = 'Error generating case report: $e';
@@ -590,25 +556,74 @@ Widget _buildInfoRow(String label, String value) {
     print('Error generating case report: $e');
   }
 }
-
-  String _getPriorityText(String? priority) {
-    if (priority == null) return 'Medium';
-    return priority;
+// Add this function to your _CaseDetailScreenState class to determine priority based on incident type
+String _determineIncidentPriority(String? incidentType) {
+  if (incidentType == null) return 'Medium';
+  
+  // Critical incidents (High priority)
+  final highPriorityIncidents = [
+    'Fire outbreak',
+    'Accident',
+    'Murder',
+    'Kidnap',
+    'Rape',
+    'Defilement',
+    'Robbery',
+  ];
+  
+  // Medium priority incidents
+  final mediumPriorityIncidents = [
+    'Theft',
+    'Sexual Assault',
+    'Domestic Violence',
+    'Drug Abuse',
+    'Fraud and financial crimes',
+    'Cyber Crime',
+  ];
+  
+  if (highPriorityIncidents.contains(incidentType)) {
+    return 'High';
+  } else if (mediumPriorityIncidents.contains(incidentType)) {
+    return 'Medium';
+  } else {
+    return 'Low';
   }
+}
 
-  Color _getPriorityColor(String? priority) {
-    switch (priority?.toLowerCase() ?? 'medium') {
-      case 'high':
-        return Colors.red;
-      case 'medium':
-        return Colors.orange;
-      case 'low':
-        return Colors.green;
-      default:
-        return Colors.grey;
-    }
+// Modify the _getPriorityText function to check incident type when determining priority
+String _getPriorityText(String? priority, String? incidentType) {
+  // First check if priority is explicitly set in the database
+  if (priority != null && priority.isNotEmpty) return priority;
+  
+  // If not set explicitly, determine priority based on incident type
+  if (incidentType != null) {
+    return _determineIncidentPriority(incidentType);
   }
+  
+  // Default priority if nothing else is available
+  return 'Medium';
+}
 
+// Similarly update the _getPriorityColor function
+Color _getPriorityColor(String? priority, String? incidentType) {
+  // First determine the actual priority to use
+  String actualPriority = priority ?? '';
+  if (actualPriority.isEmpty && incidentType != null) {
+    actualPriority = _determineIncidentPriority(incidentType);
+  }
+  
+  // Then return the appropriate color
+  switch (actualPriority.toLowerCase()) {
+    case 'high':
+      return Colors.red;
+    case 'medium':
+      return Colors.orange;
+    case 'low':
+      return Colors.green;
+    default:
+      return Colors.grey;
+  }
+}
 @override
 Widget build(BuildContext context) {
   return Scaffold(
@@ -742,12 +757,11 @@ Widget build(BuildContext context) {
                                   padding: const EdgeInsets.symmetric(
                                       horizontal: 12, vertical: 6),
                                   decoration: BoxDecoration(
-                                    color: _getPriorityColor(
-                                        _incidentData!['priority']),
+                                    color: _getPriorityColor(_incidentData!['priority'], _incidentData!['incident_type']),
                                     borderRadius: BorderRadius.circular(20),
                                   ),
                                   child: Text(
-                                    '${_getPriorityText(_incidentData!['priority'])} Priority',
+                                    '${_getPriorityText(_incidentData!['priority'], _incidentData!['incident_type'])} Priority',
                                     style: const TextStyle(
                                       color: Colors.white,
                                       fontWeight: FontWeight.bold,
@@ -767,7 +781,7 @@ Widget build(BuildContext context) {
                               ),
                             ),
                             icon: const Icon(Icons.download),
-                            label: const Text('Export Case'),
+                            label: const Text('Download Report'),
                           ),
                         ],
                       ),
