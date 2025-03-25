@@ -163,59 +163,58 @@ class AuthService {
   }
   
   // New method: Sign in as Admin
-// Updated signInAsAdmin method
-static Future<AuthResponse> signInAsAdmin({
-  required String email,
-  required String password,
-}) async {
-  // First authenticate the user
-  final response = await supabase.auth.signInWithPassword(
-    email: email,
-    password: password,
-  );
-  
-  // Then verify if the user is in the admins table
-  if (response.user != null) {
-    try {
-      // Use an RPC function instead of direct table access to avoid RLS issues
-      final isAdmin = await supabase.rpc(
-        'is_user_admin',
-        params: {'user_uuid': response.user!.id}
-      );
-      
-      if (isAdmin != true) {
-        await supabase.auth.signOut();
-        throw const AuthException(
-          'Not authorized: Admin credentials required.',
-        );
-      }
-    } catch (e) {
-      print("Error checking admin status: $e");
-      
-      // If the RPC function doesn't exist or fails, try a direct check with error handling
+  static Future<AuthResponse> signInAsAdmin({
+    required String email,
+    required String password,
+  }) async {
+    // First authenticate the user
+    final response = await supabase.auth.signInWithPassword(
+      email: email,
+      password: password,
+    );
+    
+    // Then verify if the user is in the admins table
+    if (response.user != null) {
       try {
-        final adminCount = await supabase.from('admins')
-          .select('*')
-          .eq('user_id', response.user!.id);
+        // Use an RPC function instead of direct table access to avoid RLS issues
+        final isAdmin = await supabase.rpc(
+          'is_user_admin',
+          params: {'user_uuid': response.user!.id}
+        );
         
-        if (adminCount.count == 0) {
+        if (isAdmin != true) {
           await supabase.auth.signOut();
           throw const AuthException(
             'Not authorized: Admin credentials required.',
           );
         }
-      } catch (innerE) {
-        // If even the direct check fails, sign out and throw exception
-        await supabase.auth.signOut();
-        throw const AuthException(
-          'Error verifying admin credentials. Please try again.',
-        );
+      } catch (e) {
+        print("Error checking admin status: $e");
+        
+        // If the RPC function doesn't exist or fails, try a direct check with error handling
+        try {
+          final adminCount = await supabase.from('admins')
+            .select('*')
+            .eq('user_id', response.user!.id);
+          
+          if (adminCount.count == 0) {
+            await supabase.auth.signOut();
+            throw const AuthException(
+              'Not authorized: Admin credentials required.',
+            );
+          }
+        } catch (innerE) {
+          // If even the direct check fails, sign out and throw exception
+          await supabase.auth.signOut();
+          throw const AuthException(
+            'Error verifying admin credentials. Please try again.',
+          );
+        }
       }
     }
+    
+    return response;
   }
-  
-  return response;
-}
   
   // New method: Create Admin Account (can only be used by existing admins)
   static Future<AuthResponse> createAdminAccount({
@@ -349,35 +348,35 @@ static Future<AuthResponse> signInAsAdmin({
   }
   
   // New method: Check if current user is an admin
-static Future<bool> isUserAdmin() async {
-  if (currentUser == null) return false;
-  
-  try {
-    // Use the RPC function we created to check admin status
-    final isAdmin = await supabase.rpc(
-      'is_user_admin',
-      params: {'user_uuid': currentUser!.id}
-    );
+  static Future<bool> isUserAdmin() async {
+    if (currentUser == null) return false;
     
-    return isAdmin == true;
-  } catch (e) {
-    print("Error in RPC call: $e");
-    
-    // Fallback to direct check
     try {
-      final adminRecord = await supabase
-        .from('admins')
-        .select()
-        .eq('user_id', currentUser!.id)
-        .single();
+      // Use the RPC function we created to check admin status
+      final isAdmin = await supabase.rpc(
+        'is_user_admin',
+        params: {'user_uuid': currentUser!.id}
+      );
       
-      return adminRecord != null;
-    } catch (fallbackError) {
-      print("Error checking admin status: $fallbackError");
-      return false;
+      return isAdmin == true;
+    } catch (e) {
+      print("Error in RPC call: $e");
+      
+      // Fallback to direct check
+      try {
+        final adminRecord = await supabase
+          .from('admins')
+          .select()
+          .eq('user_id', currentUser!.id)
+          .single();
+        
+        return adminRecord != null;
+      } catch (fallbackError) {
+        print("Error checking admin status: $fallbackError");
+        return false;
+      }
     }
   }
-}
   
   // Get all regular users (for admin to select from)
   static Future<List<Map<String, dynamic>>> getAllRegularUsers() async {
@@ -448,21 +447,62 @@ static Future<bool> isUserAdmin() async {
   // Get current user
   static User? get currentUser => supabase.auth.currentUser;
   
-  // Get user profile data
-  static Future<Map<String, dynamic>?> getUserProfile() async {
-    if (currentUser == null) return null;
+  // Get user profile data - UPDATED METHOD
+  static Future<Map<String, dynamic>> getUserProfile() async {
+    if (currentUser == null) return {};
     
     try {
       print("Fetching profile for user: ${currentUser!.id}");
       
+      // First try to get data from user_profiles table
       final response = await supabase
         .from('user_profiles')
         .select('*')
         .eq('user_id', currentUser!.id)
         .maybeSingle();
       
-      print("Profile data fetched: $response");
-      return response;
+      if (response != null) {
+        print("Profile data fetched from user_profiles: $response");
+        return response;
+      }
+      
+      // If no profile exists in the table, try to get data from user metadata
+      final userData = currentUser!.userMetadata;
+      if (userData != null && userData.isNotEmpty) {
+        print("Using metadata from auth user: $userData");
+        
+        // Transform metadata to match your profile structure
+        final profileData = {
+          'user_id': currentUser!.id,
+          'first_name': userData['first_name'],
+          'last_name': userData['last_name'],
+          'region': userData['region'],
+          'district': userData['district'],
+          'village': userData['village'],
+          'role': userData['role'] ?? 'user',
+        };
+        
+        // Create the profile if it doesn't exist
+        try {
+          await _createUserProfile(currentUser!.id, userData);
+          print("Created new profile from metadata");
+        } catch (e) {
+          print("Error creating profile from metadata: $e");
+        }
+        
+        return profileData;
+      }
+      
+      // Return empty profile if no data is found
+      return {
+        'user_id': currentUser!.id,
+        'first_name': '',
+        'last_name': '',
+        'region': '',
+        'district': '',
+        'village': '',
+        'role': 'user',
+      };
     } catch (e) {
       print('Error fetching user profile: $e');
       
@@ -477,31 +517,106 @@ static Future<bool> isUserAdmin() async {
         if (response.isNotEmpty) {
           print("Found profile using alternative approach: ${response.first}");
           return response.first;
-        } else {
-          print("No profile found with alternative approach");
-          return null;
-        }
+        } 
       } catch (altError) {
         print("Alternative fetch approach also failed: $altError");
-        return null;
       }
+      
+      // Try to get data from user metadata as a last resort
+      final userData = currentUser!.userMetadata;
+      if (userData != null && userData.isNotEmpty) {
+        print("Falling back to metadata from auth user: $userData");
+        
+        return {
+          'user_id': currentUser!.id,
+          'first_name': userData['first_name'],
+          'last_name': userData['last_name'],
+          'region': userData['region'],
+          'district': userData['district'],
+          'village': userData['village'],
+          'role': userData['role'] ?? 'user',
+        };
+      }
+      
+      // Return basic profile with user ID only if all else fails
+      return {
+        'user_id': currentUser!.id,
+        'first_name': '',
+        'last_name': '',
+        'region': '',
+        'district': '',
+        'village': '',
+        'role': 'user',
+      };
     }
   }
   
-  // Update user profile
+  // Update user profile - UPDATED METHOD
   static Future<void> updateUserProfile(Map<String, dynamic> data) async {
     if (currentUser == null) throw Exception('User not authenticated');
     
     try {
-      await supabase
+      // First check if profile exists
+      final existing = await supabase
         .from('user_profiles')
-        .update(data)
-        .eq('user_id', currentUser!.id);
+        .select('user_id')
+        .eq('user_id', currentUser!.id)
+        .maybeSingle();
+      
+      if (existing != null) {
+        // Update existing profile
+        await supabase
+          .from('user_profiles')
+          .update(data)
+          .eq('user_id', currentUser!.id);
+      } else {
+        // Create new profile if it doesn't exist
+        final completeData = {
+          'user_id': currentUser!.id,
+          ...data
+        };
+        
+        await supabase
+          .from('user_profiles')
+          .insert(completeData);
+      }
+      
+      // Also update user metadata for redundancy
+      await supabase.auth.updateUser(
+        UserAttributes(
+          data: {
+            'first_name': data['first_name'],
+            'last_name': data['last_name'],
+            'region': data['region'],
+            'district': data['district'],
+            'village': data['village'],
+          },
+        ),
+      );
       
       print("Profile updated successfully");
     } catch (e) {
       print("Error updating profile: $e");
-      rethrow;
+      
+      // Try alternative approach with RPC if normal update fails
+      try {
+        print("Attempting RPC update");
+        await supabase.rpc(
+          'update_user_profile',
+          params: {
+            'p_user_id': currentUser!.id,
+            'p_first_name': data['first_name'] ?? '',
+            'p_last_name': data['last_name'] ?? '',
+            'p_region': data['region'] ?? '',
+            'p_district': data['district'] ?? '',
+            'p_village': data['village'] ?? '',
+          },
+        );
+        print("Profile updated using RPC");
+      } catch (rpcError) {
+        print("RPC update also failed: $rpcError");
+        rethrow; // Rethrow the original error
+      }
     }
   }
   
@@ -526,7 +641,7 @@ static Future<bool> isUserAdmin() async {
   static Stream<AuthState> get onAuthStateChange => 
       supabase.auth.onAuthStateChange;
       
-        static get count => null;
+  static get count => null;
 }
 
 extension on PostgrestList {

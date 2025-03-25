@@ -6,11 +6,12 @@ import 'dart:async'; // For StreamSubscription
 import 'screens/home_page.dart';
 import 'screens/sign_up.dart';
 import 'service/auth_service.dart';
-import 'screens/profile_page.dart';
 import 'screens/forgot_password.dart';
 import 'screens/incident_report_form.dart'; // Import the incident report form
 import 'screens/admin_dashboard.dart'; // Import the admin dashboard
 import 'screens/user_dashboard.dart'; // Import the new user dashboard
+import 'screens/user_profile_screen.dart'; // Import the user profile screen
+import 'screens/edit_profile_screen.dart'; // Import the edit profile screen
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -59,7 +60,6 @@ class MyApp extends StatelessWidget {
         'SignUp': (context) => const SignUpPage(),
         'Login': (context) => const LoginPage(isAdminLogin: false), // Specify regular login
         'AdminLogin': (context) => const LoginPage(isAdminLogin: true), // Admin login route
-        '/profile': (context) => const ProfilePage(),
         '/forgot-password': (context) => const ForgotPasswordPage(),
         'IncidentReport': (context) => const IncidentReportFormPage(),
         '/incident-report': (context) => const IncidentReportFormPage(),
@@ -67,6 +67,10 @@ class MyApp extends StatelessWidget {
         '/admin-dashboard': (context) => const AdminDashboard(), // Alternative route path
         'UserDashboard': (context) => const UserDashboard(), // Add user dashboard route
         '/user-dashboard': (context) => const UserDashboard(), // Alternative route path
+        
+        // User profile routes - Use the new UserProfileScreen
+        'Profile': (context) => const UserProfileScreen(),
+        '/profile': (context) => const UserProfileScreen(),
       },
       // Add route generator for handling parameters in routes
       onGenerateRoute: (settings) {
@@ -81,6 +85,39 @@ class MyApp extends StatelessWidget {
           // Default to regular login if no params
           return MaterialPageRoute(
             builder: (context) => const LoginPage(isAdminLogin: false),
+          );
+        }
+        // Handle EditProfile route with parameters
+        else if (settings.name == 'EditProfile') {
+          final args = settings.arguments;
+          // If we have profile data, pass it to the EditProfileScreen
+          if (args is Map<String, dynamic>) {
+            return MaterialPageRoute(
+              builder: (context) => EditProfileScreen(userProfile: args),
+            );
+          }
+          // If we don't have args, try to get profile data
+          return MaterialPageRoute(
+            builder: (context) => FutureBuilder<Map<String, dynamic>>(
+              future: AuthService.getUserProfile(),
+              builder: (context, snapshot) {
+                if (snapshot.connectionState == ConnectionState.waiting) {
+                  return const Scaffold(
+                    body: Center(child: CircularProgressIndicator()),
+                  );
+                }
+                if (snapshot.hasData) {
+                  return EditProfileScreen(userProfile: snapshot.data!);
+                }
+                // If we couldn't get profile data, go back to profile screen
+                WidgetsBinding.instance.addPostFrameCallback((_) {
+                  Navigator.of(context).pushReplacementNamed('Profile');
+                });
+                return const Scaffold(
+                  body: Center(child: Text('Loading profile...')),
+                );
+              },
+            ),
           );
         }
         return null;
