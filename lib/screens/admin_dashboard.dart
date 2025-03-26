@@ -40,18 +40,27 @@ class _AdminDashboardState extends State<AdminDashboard> {
   int criticalCases = 0;
   int newReports = 0;
   String emergencyLevel = 'Low';
+  // Add right after your existing variables in _AdminDashboardState class
+// Notification related variables
+List<Map<String, dynamic>> notifications = [];
+int unreadNotifications = 0;
+DateTime? lastFetchTime;
   
   List<Map<String, dynamic>> recentReports = [];
   List<Map<String, dynamic>> recentActivities = [];
   List<Map<String, dynamic>> filteredReports = [];
   
   @override
-  void initState() {
-    super.initState();
-    _fetchDashboardData();
-    _getCurrentUser();
-  }
+void initState() {
+  super.initState();
+  _fetchDashboardData();
+  _getCurrentUser();
   
+  // Add this to set up a timer to check for new reports periodically
+  Future.delayed(const Duration(seconds: 1), () {
+    _checkForNewReports();
+  });
+}
   // Get current user's name for display
   Future<void> _getCurrentUser() async {
     try {
@@ -79,93 +88,287 @@ final response = await supabase
       print('Error getting current user: $e');
     }
   }
-  
-  // Fetch dashboard data from database
-  Future<void> _fetchDashboardData() async {
-    setState(() {
-      _isLoading = true;
+  // Add after _getCurrentUser method
+// Periodically check for new reports
+Future<void> _checkForNewReports() async {
+  try {
+    final supabase = Supabase.instance.client;
+    
+    // If this is the first check, just record the current time
+    if (lastFetchTime == null) {
+      lastFetchTime = DateTime.now();
+      return;
+    }
+    
+    // Format the lastFetchTime as an ISO string for the Supabase query
+    final lastCheckTime = lastFetchTime!.toIso8601String();
+    
+    // Query for reports created after the last check time
+    final newReportsResponse = await supabase
+        .from('incidents')
+        .select()
+        .gt('created_at', lastCheckTime)
+        .order('created_at', ascending: false);
+    
+    if (newReportsResponse != null && newReportsResponse is List && newReportsResponse.isNotEmpty) {
+      final newReportsData = newReportsResponse.cast<Map<String, dynamic>>();
+      
+      // Update lastFetchTime to now
+      lastFetchTime = DateTime.now();
+      
+      // Add new reports to notifications
+      for (var report in newReportsData) {
+        final DateTime createdAt = DateTime.parse(report['created_at']);
+        final String formattedTime = '${createdAt.hour.toString().padLeft(2, '0')}:${createdAt.minute.toString().padLeft(2, '0')}';
+        
+        notifications.add({
+          'id': report['id'],
+          'title': 'New ${report['incident_type'] ?? 'Unknown Incident'}',
+          'message': 'New incident reported in ${report['district'] ?? 'Unknown Location'}',
+          'time': formattedTime,
+          'read': false,
+          'priority': _getIncidentPriority(report['incident_type']),
+        });
+      }
+      // Add after _checkForNewReports method
+
+      
+      // Update unread count
+      setState(() {
+        unreadNotifications = notifications.where((n) => n['read'] == false).length;
+      });
+      
+      // Refresh the dashboard data to include the new reports
+      _fetchDashboardData();
+    }
+    
+    // Schedule the next check
+    Future.delayed(const Duration(seconds: 30), () {
+      _checkForNewReports();
     });
     
-    try {
-      // Get Supabase client
-      final supabase = Supabase.instance.client;
+  } catch (e) {
+    print('Error checking for new reports: $e');
+    
+    // Even if there's an error, schedule the next check
+    Future.delayed(const Duration(seconds: 30), () {
+      _checkForNewReports();
+    });
+  }
+}
+  // Show notifications dialog
+void _showNotificationsDialog() {
+  showDialog(
+    context: context,
+    builder: (context) => AlertDialog(
+      title: Row(
+        children: [
+          const Icon(Icons.notifications, color: Color(0xFF003366)),
+          const SizedBox(width: 8),
+          const Text('Notifications'),
+        ],
+      ),
+      content: SizedBox(
+        width: double.maxFinite,
+        child: notifications.isEmpty
+            ? const Center(
+                child: Padding(
+                  padding: EdgeInsets.all(20.0),
+                  child: Text('No notifications'),
+                ),
+              )
+            : ListView.builder(
+                shrinkWrap: true,
+                itemCount: notifications.length,
+                itemBuilder: (context, index) {
+                  final notification = notifications[index];
+                  return ListTile(
+                    leading: CircleAvatar(
+                      backgroundColor: notification['read'] == true
+                          ? Colors.grey.shade200
+                          : _getPriorityColor(notification['priority'] ?? 'Low'),
+                      child: Icon(
+                        Icons.notification_important,
+                        color: notification['read'] == true
+                            ? Colors.grey
+                            : _getPriorityTextColor(notification['priority'] ?? 'Low'),
+                      ),
+                    ),
+                    title: Text(
+                      notification['title'],
+                      style: TextStyle(
+                        fontWeight: notification['read'] == true ? FontWeight.normal : FontWeight.bold,
+                      ),
+                    ),
+                    subtitle: Text(notification['message']),
+                    trailing: Text(notification['time']),
+                    onTap: () {
+                      // Mark notification as read
+                      setState(() {
+                        notifications[index]['read'] = true;
+                        unreadNotifications = notifications.where((n) => n['read'] == false).length;
+                      });
+                      
+                      // Close the dialog
+                      Navigator.of(context).pop();
+                      
+                      // Navigate to the case detail
+                      Navigator.push(
+                        context,
+                        MaterialPageRoute(
+                          builder: (context) => CaseDetailScreen(
+                            incidentId: notification['id'],
+                          ),
+                        ),
+                      ).then((_) {
+                        // Refresh dashboard data when returning
+                        _fetchDashboardData();
+                      });
+                    },
+                  );
+                },
+              ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () {
+            // Mark all as read
+            setState(() {
+              for (var i = 0; i < notifications.length; i++) {
+                notifications[i]['read'] = true;
+              }
+              unreadNotifications = 0;
+            });
+            Navigator.of(context).pop();
+          },
+          child: const Text('Mark All Read'),
+        ),
+        ElevatedButton(
+          onPressed: () {
+            Navigator.of(context).pop();
+          },
+          style: ElevatedButton.styleFrom(
+            backgroundColor: const Color(0xFF003366),
+          ),
+          child: const Text('Close'),
+        ),
+      ],
+    ),
+  );
+}
+  // Fetch dashboard data from database
+  Future<void> _fetchDashboardData() async {
+  setState(() {
+    _isLoading = true;
+  });
+  
+  try {
+    // Get Supabase client
+    final supabase = Supabase.instance.client;
+    
+    // Fetch all incidents
+    final response = await supabase
+        .from('incidents')
+        .select()
+        .order('created_at', ascending: false);
+    
+    if (response != null && response is List) {
+      // Process data for dashboard metrics
+      final incidents = response.cast<Map<String, dynamic>>();
       
-      // Fetch all incidents
-      final response = await supabase
-          .from('incidents')
-          .select()
-          .order('created_at', ascending: false);
+      // Count total active cases
+      activeCase = incidents.length;
       
-      if (response != null && response is List) {
-        // Process data for dashboard metrics
-        final incidents = response.cast<Map<String, dynamic>>();
-        
-        // Count total active cases
-        activeCase = incidents.length;
-        
-        // Count critical cases (high priority incidents)
-        criticalCases = incidents.where((incident) => 
-          _getIncidentPriority(incident['incident_type']) == 'High' ||
-          incident['incident_type'] == 'Fire outbreak' || 
-          incident['incident_type'] == 'Accident'
-        ).length;
-        
-        // Count new reports today
-        final today = DateTime.now();
-        final todayString = '${today.year}-${today.month.toString().padLeft(2, '0')}-${today.day.toString().padLeft(2, '0')}';
-        
-        newReports = incidents.where((incident) {
-          final createdAt = incident['created_at'] as String;
-          return createdAt.startsWith(todayString);
-        }).length;
-        
-        // Determine emergency level based on critical cases percentage
-        final criticalPercentage = activeCase > 0 ? (criticalCases / activeCase) * 100 : 0;
-        if (criticalPercentage >= 20) {
-          emergencyLevel = 'High';
-        } else if (criticalPercentage >= 10) {
-          emergencyLevel = 'Medium';
-        } else {
-          emergencyLevel = 'Low';
-        }
-        
-        // Get recent reports (up to 10)
-        recentReports = incidents.take(10).map((incident) {
-          // Format time
-          final DateTime createdAt = DateTime.parse(incident['created_at']);
-          final String formattedTime = '${createdAt.hour.toString().padLeft(2, '0')}:${createdAt.minute.toString().padLeft(2, '0')}';
-          
-          return {
-            'id': incident['id'],
-            'title': incident['incident_type'] ?? 'Unknown Incident',
-            'district': incident['district'] ?? 'Unknown Location',
-            'time': formattedTime,
-            'priority': _getIncidentPriority(incident['incident_type']),
-            'status': incident['status'] ?? 'Pending',
-          };
-        }).toList();
-        
-        // Initialize filtered reports
-        filteredReports = List.from(recentReports);
+      // Count critical cases (high priority incidents)
+      criticalCases = incidents.where((incident) => 
+        _getIncidentPriority(incident['incident_type']) == 'High' ||
+        incident['incident_type'] == 'Fire outbreak' || 
+        incident['incident_type'] == 'Accident'
+      ).length;
+      
+      // Count new reports today
+      final today = DateTime.now();
+      final todayString = '${today.year}-${today.month.toString().padLeft(2, '0')}-${today.day.toString().padLeft(2, '0')}';
+      
+      newReports = incidents.where((incident) {
+        final createdAt = incident['created_at'] as String;
+        return createdAt.startsWith(todayString);
+      }).length;
+      
+      // Determine emergency level based on critical cases percentage
+      final criticalPercentage = activeCase > 0 ? (criticalCases / activeCase) * 100 : 0;
+      if (criticalPercentage >= 20) {
+        emergencyLevel = 'High';
+      } else if (criticalPercentage >= 10) {
+        emergencyLevel = 'Medium';
+      } else {
+        emergencyLevel = 'Low';
       }
       
-      // Fetch recent activities
-      await _fetchRecentActivity();
+      // Get recent reports (up to 10)
+      recentReports = incidents.take(10).map((incident) {
+        // Format time
+        final DateTime createdAt = DateTime.parse(incident['created_at']);
+        final String formattedTime = '${createdAt.hour.toString().padLeft(2, '0')}:${createdAt.minute.toString().padLeft(2, '0')}';
+        
+        return {
+          'id': incident['id'],
+          'title': incident['incident_type'] ?? 'Unknown Incident',
+          'district': incident['district'] ?? 'Unknown Location',
+          'time': formattedTime,
+          'priority': _getIncidentPriority(incident['incident_type']),
+          'status': incident['status'] ?? 'Pending',
+        };
+      }).toList();
       
-    } catch (e) {
-      print('Error fetching dashboard data: $e');
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('Error loading dashboard data: $e'),
-          backgroundColor: Colors.red,
-        ),
-      );
-    } finally {
-      setState(() {
-        _isLoading = false;
-      });
+      // Initialize filtered reports
+      filteredReports = List.from(recentReports);
+      
+      // Add this new code for notifications
+      // If this is the first fetch, initialize lastFetchTime and create sample notifications
+      if (lastFetchTime == null) {
+        lastFetchTime = DateTime.now();
+        
+        // For demo purposes, create some sample notifications
+        // In a real app, these would come from backend events
+        if (incidents.isNotEmpty && notifications.isEmpty) {
+          final sampleIncidents = incidents.take(3).toList();
+          for (var incident in sampleIncidents) {
+            final DateTime createdAt = DateTime.parse(incident['created_at']);
+            final String formattedTime = '${createdAt.hour.toString().padLeft(2, '0')}:${createdAt.minute.toString().padLeft(2, '0')}';
+            
+            notifications.add({
+              'id': incident['id'],
+              'title': 'New ${incident['incident_type'] ?? 'Unknown Incident'}',
+              'message': 'New incident reported in ${incident['district'] ?? 'Unknown Location'}',
+              'time': formattedTime,
+              'read': false,
+              'priority': _getIncidentPriority(incident['incident_type']),
+            });
+          }
+          
+          unreadNotifications = notifications.length;
+        }
+      }
     }
+    
+    // Fetch recent activities
+    await _fetchRecentActivity();
+    
+  } catch (e) {
+    print('Error fetching dashboard data: $e');
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text('Error loading dashboard data: $e'),
+        backgroundColor: Colors.red,
+      ),
+    );
+  } finally {
+    setState(() {
+      _isLoading = false;
+    });
   }
+}
   
   // Fetch recent activities for the dashboard
   Future<void> _fetchRecentActivity() async {
@@ -575,17 +778,41 @@ Widget build(BuildContext context) {
       backgroundColor: const Color(0xFF003366),
       elevation: 0,
       actions: [
-        IconButton(
-          icon: const Icon(Icons.notifications_none, color: Colors.white),
-          onPressed: () {
-            // Show notifications
-            ScaffoldMessenger.of(context).showSnackBar(
-              const SnackBar(
-                content: Text('No new notifications'),
-                duration: Duration(seconds: 2),
+        // Replace the existing notification button with this Stack
+        Stack(
+          children: [
+            IconButton(
+              icon: const Icon(Icons.notifications_none, color: Colors.white),
+              onPressed: () {
+                _showNotificationsDialog();
+              },
+            ),
+            if (unreadNotifications > 0)
+              Positioned(
+                right: 8,
+                top: 8,
+                child: Container(
+                  padding: const EdgeInsets.all(2),
+                  decoration: BoxDecoration(
+                    color: Colors.red,
+                    borderRadius: BorderRadius.circular(10),
+                  ),
+                  constraints: const BoxConstraints(
+                    minWidth: 16,
+                    minHeight: 16,
+                  ),
+                  child: Text(
+                    unreadNotifications.toString(),
+                    style: const TextStyle(
+                      color: Colors.white,
+                      fontSize: 10,
+                      fontWeight: FontWeight.bold,
+                    ),
+                    textAlign: TextAlign.center,
+                  ),
+                ),
               ),
-            );
-          },
+          ],
         ),
         IconButton(
           icon: const Icon(Icons.refresh, color: Colors.white),
