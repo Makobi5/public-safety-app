@@ -561,7 +561,7 @@ final response = await supabase
     );
   }
 
-  @override
+ @override
 Widget build(BuildContext context) {
   return Scaffold(
     appBar: AppBar(
@@ -574,21 +574,6 @@ Widget build(BuildContext context) {
       ),
       backgroundColor: const Color(0xFF003366),
       elevation: 0,
-      leading: IconButton(
-        icon: const Icon(Icons.arrow_back, color: Colors.white),
-        onPressed: () {
-          // Handle back navigation
-          if (_showAddAdminForm) {
-            // If we're in the admin form, return to dashboard
-            setState(() {
-              _showAddAdminForm = false;
-            });
-          } else {
-            // Otherwise, navigate back to previous screen
-            Navigator.of(context).pop();
-          }
-        },
-      ),
       actions: [
         IconButton(
           icon: const Icon(Icons.notifications_none, color: Colors.white),
@@ -597,6 +582,7 @@ Widget build(BuildContext context) {
             ScaffoldMessenger.of(context).showSnackBar(
               const SnackBar(
                 content: Text('No new notifications'),
+                duration: Duration(seconds: 2),
               ),
             );
           },
@@ -605,82 +591,6 @@ Widget build(BuildContext context) {
           icon: const Icon(Icons.refresh, color: Colors.white),
           onPressed: _fetchDashboardData,
         ),
-        // Profile/Logout button
-        _currentUserName != null 
-            ? PopupMenuButton<String>(
-                icon: CircleAvatar(
-                  backgroundColor: Colors.white24,
-                  radius: 16,
-                  child: Text(
-                    _currentUserName!.isNotEmpty
-                        ? _currentUserName![0].toUpperCase()
-                        : 'A',
-                    style: const TextStyle(
-                      color: Colors.white,
-                      fontWeight: FontWeight.bold,
-                    ),
-                  ),
-                ),
-                tooltip: 'User Menu',
-                offset: const Offset(0, 40),
-                onSelected: (value) {
-                  if (value == 'logout') {
-                    _logout();
-                  } else if (value == 'profile') {
-                    // Navigate to profile screen
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      const SnackBar(
-                        content: Text('Profile page coming soon'),
-                      ),
-                    );
-                  } else if (value == 'settings') {
-                    // Navigate to settings screen
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      const SnackBar(
-                        content: Text('Settings page coming soon'),
-                      ),
-                    );
-                  }
-                },
-                itemBuilder: (BuildContext context) => [
-                  PopupMenuItem(
-                    value: 'profile',
-                    child: Row(
-                      children: [
-                        Icon(Icons.person, color: Color(0xFF003366)),
-                        const SizedBox(width: 8),
-                        Text('Profile: $_currentUserName'),
-                      ],
-                    ),
-                  ),
-                  PopupMenuItem(
-                    value: 'settings',
-                    child: Row(
-                      children: [
-                        Icon(Icons.settings, color: Color(0xFF003366)),
-                        const SizedBox(width: 8),
-                        const Text('Settings'),
-                      ],
-                    ),
-                  ),
-                  const PopupMenuDivider(),
-                  PopupMenuItem(
-                    value: 'logout',
-                    child: Row(
-                      children: [
-                        Icon(Icons.logout, color: Colors.red),
-                        const SizedBox(width: 8),
-                        const Text('Logout', style: TextStyle(color: Colors.red)),
-                      ],
-                    ),
-                  ),
-                ],
-              )
-            : IconButton(
-                icon: const Icon(Icons.logout, color: Colors.white),
-                tooltip: 'Logout',
-                onPressed: _logout,
-              ),
       ],
     ),
     body: _showAddAdminForm ? _buildAddAdminForm() : _buildDashboard(),

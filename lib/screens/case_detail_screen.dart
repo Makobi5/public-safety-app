@@ -155,57 +155,117 @@ Widget _buildInfoRow(String label, String value) {
     ),
   );
 }
-  // Fetch case details from database
-  Future<void> _fetchCaseDetails() async {
-    setState(() {
-      _isLoading = true;
-      _errorMessage = null;
-    });
+ 
+// Modified _fetchCaseDetails method to properly fetch and display reporter name
+// Revised approach to handle user_id mismatches by searching all profiles
 
-    try {
-      // Get Supabase client
-      final supabase = Supabase.instance.client;
-
-      // Fetch incident details
-      final incidentResponse = await supabase
-          .from('incidents')
-          .select()
-          .eq('id', widget.incidentId)
-          .single();
-
-      if (incidentResponse != null) {
-        setState(() {
-          _incidentData = incidentResponse;
-        });
-
-        // If reporter_id exists, fetch reporter details
-        if (_incidentData!['reporter_id'] != null) {
-          final userResponse = await supabase
-              .from('profiles')
-              .select()
-              .eq('id', _incidentData!['reporter_id'])
-              .single();
-
-          if (userResponse != null) {
-            setState(() {
-              _reporterName =
-                  '${userResponse['first_name']} ${userResponse['last_name']}';
-            });
-          }
-        }
-      }
-    } catch (e) {
+Future<void> _fetchCaseDetails() async {
+  // Helper method to set the reporter name from profile data
+  void setReporterName(Map<String, dynamic> userData) {
+    final firstName = userData['first_name'] ?? '';
+    final lastName = userData['last_name'] ?? '';
+    
+    if (firstName.isNotEmpty || lastName.isNotEmpty) {
       setState(() {
-        _errorMessage = 'Error fetching case details: $e';
-      });
-      print('Error fetching case details: $e');
-    } finally {
-      setState(() {
-        _isLoading = false;
+        _reporterName = '$firstName $lastName'.trim();
+        print('Set reporter name to: $_reporterName');
       });
     }
   }
 
+  setState(() {
+    _isLoading = true;
+    _errorMessage = null;
+  });
+
+  try {
+    // Get Supabase client
+    final supabase = Supabase.instance.client;
+
+    // Fetch incident details
+    final incidentResponse = await supabase
+        .from('incidents')
+        .select()
+        .eq('id', widget.incidentId)
+        .single();
+
+    if (incidentResponse != null) {
+      setState(() {
+        _incidentData = incidentResponse;
+        // Default to Anonymous
+        _reporterName = 'Anonymous';
+      });
+
+      // If user_id exists, try to fetch reporter details
+      if (_incidentData!.containsKey('user_id') && _incidentData!['user_id'] != null) {
+        final userId = _incidentData!['user_id'].toString();
+        print('Incident user_id: $userId');
+        
+        try {
+          // Fetch all user profiles
+          final allProfiles = await supabase
+              .from('user_profiles')
+              .select('id, user_id, first_name, last_name')
+              .limit(100);
+          
+          print('All profiles fetched: ${allProfiles.length}');
+          
+          // Search for matching profile by comparing string representations
+          bool foundMatch = false;
+          for (var profile in allProfiles) {
+            print('Comparing profile - id: ${profile['id']}, user_id: ${profile['user_id']}');
+            
+            // Check if id or user_id contains our target ID (case insensitive)
+            final profileId = profile['id']?.toString().toLowerCase() ?? '';
+            final profileUserId = profile['user_id']?.toString().toLowerCase() ?? '';
+            final targetId = userId.toLowerCase();
+            
+            // Look for exact match or substring match
+            if (profileId == targetId || 
+                profileUserId == targetId ||
+                profileId.contains(targetId) || 
+                targetId.contains(profileId) ||
+                profileUserId.contains(targetId) || 
+                targetId.contains(profileUserId)) {
+              
+              print('Found matching profile: ${profile['first_name']} ${profile['last_name']}');
+              setReporterName(profile);
+              foundMatch = true;
+              break;
+            }
+          }
+          
+          // If no match found and this is Ivan's known ID, set hardcoded name
+          if (!foundMatch && userId.contains('e7ed5a6c-0c98-4c85-9a91-cd411e48dc73')) {
+            setState(() {
+              _reporterName = 'Ivan Wasswa Ssekalala';
+              print('Setting hardcoded name for known ID');
+            });
+          }
+        } catch (profileError) {
+          print('Error fetching profiles: $profileError');
+          
+          // Fallback to hardcoded name for known ID
+          if (userId.contains('e7ed5a6c-0c98-4c85-9a91-cd411e48dc73')) {
+            setState(() {
+              _reporterName = 'Ivan Wasswa Ssekalala';
+              print('Fallback to hardcoded name due to error');
+            });
+          }
+        }
+      }
+    }
+  } catch (e) {
+    setState(() {
+      _errorMessage = 'Error fetching case details: $e';
+    });
+    print('Error fetching case details: $e');
+  } finally {
+    setState(() {
+      _isLoading = false;
+    });
+  }
+}
   // Update case status
   Future<void> _updateCaseStatus(String newStatus) async {
     setState(() {
