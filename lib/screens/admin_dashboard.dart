@@ -9,7 +9,8 @@ import 'package:pdf/widgets.dart' as pw;
 import 'package:path_provider/path_provider.dart';
 //import 'package:share_plus/share_plus.dart';
 import 'dart:io';
-import 'home_page.dart'; 
+import 'home_page.dart';
+import 'user_management_screen.dart'; 
 
 class AdminDashboard extends StatefulWidget {
   const AdminDashboard({Key? key}) : super(key: key);
@@ -822,37 +823,40 @@ Widget build(BuildContext context) {
     ),
     body: _showAddAdminForm ? _buildAddAdminForm() : _buildDashboard(),
     floatingActionButton: !_showAddAdminForm 
-        ? Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              FloatingActionButton(
-                heroTag: 'reportBtn',
-                onPressed: () {
-                  // Navigate to new report screen
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    const SnackBar(
-                      content: Text('New report page coming soon'),
-                    ),
-                  );
-                },
-                backgroundColor: Colors.green,
-                child: const Icon(Icons.add_chart),
-              ),
-              const SizedBox(width: 16),
-              FloatingActionButton(
-                heroTag: 'adminBtn',
-                onPressed: () {
-                  setState(() {
-                    _showAddAdminForm = true;
-                  });
-                },
-                backgroundColor: const Color(0xFF003366),
-                child: const Icon(Icons.person_add),
-                tooltip: 'Add Admin User',
-              ),
-            ],
-          )
-        : null,
+    ? Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          FloatingActionButton(
+            heroTag: 'reportBtn',
+            onPressed: () {
+              Navigator.push(
+                context,
+                MaterialPageRoute(
+                  builder: (context) => const UserManagementScreen(),
+                ),
+              ).then((_) {
+                _fetchDashboardData();
+              });
+            },
+            backgroundColor: Colors.blue,
+            child: const Icon(Icons.people),
+            tooltip: 'User Management',
+          ),
+          const SizedBox(width: 16),
+          FloatingActionButton(
+            heroTag: 'adminBtn',
+            onPressed: () {
+              setState(() {
+                _showAddAdminForm = true;
+              });
+            },
+            backgroundColor: const Color(0xFF003366),
+            child: const Icon(Icons.person_add),
+            tooltip: 'Add Admin User',
+          ),
+        ],
+      )
+    : null,
     drawer: _buildAppDrawer(),
   );
 }
@@ -913,17 +917,21 @@ Widget build(BuildContext context) {
             },
           ),
           ListTile(
-            leading: const Icon(Icons.people),
-            title: const Text('User Management'),
-            onTap: () {
-              Navigator.pop(context);
-              ScaffoldMessenger.of(context).showSnackBar(
-                const SnackBar(
-                  content: Text('User Management page coming soon'),
-                ),
-              );
-            },
-          ),
+  leading: const Icon(Icons.people),
+  title: const Text('User Management'),
+  onTap: () {
+    Navigator.pop(context);
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (context) => const UserManagementScreen(),
+      ),
+    ).then((_) {
+      // Refresh dashboard data when returning
+      _fetchDashboardData();
+    });
+  },
+),
           ListTile(
             leading: const Icon(Icons.assessment),
             title: const Text('Reports & Analytics'),
