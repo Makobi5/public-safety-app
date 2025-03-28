@@ -35,6 +35,8 @@ class _AdminDashboardState extends State<AdminDashboard> {
   String? _errorMessage;
   bool _showAddAdminForm = false;
   String? _currentUserName;
+  bool _isRefreshing = false;
+Map<String, bool> processedIncidents = {}; // Track processed incidents
 
   // Dashboard data from database
   int activeCase = 0;
@@ -118,19 +120,30 @@ Future<void> _checkForNewReports() async {
       lastFetchTime = DateTime.now();
       
       // Add new reports to notifications
-      for (var report in newReportsData) {
-        final DateTime createdAt = DateTime.parse(report['created_at']);
-        final String formattedTime = '${createdAt.hour.toString().padLeft(2, '0')}:${createdAt.minute.toString().padLeft(2, '0')}';
-        
-        notifications.add({
-          'id': report['id'],
-          'title': 'New ${report['incident_type'] ?? 'Unknown Incident'}',
-          'message': 'New incident reported in ${report['district'] ?? 'Unknown Location'}',
-          'time': formattedTime,
-          'read': false,
-          'priority': _getIncidentPriority(report['incident_type']),
-        });
-      }
+      // Add new reports to notifications
+for (var report in newReportsData) {
+  final String reportId = report['id'].toString();
+  
+  // Skip if we've already processed this incident
+  if (processedIncidents.containsKey(reportId) && processedIncidents[reportId] == true) {
+    continue;
+  }
+  
+  final DateTime createdAt = DateTime.parse(report['created_at']);
+  final String formattedTime = '${createdAt.hour.toString().padLeft(2, '0')}:${createdAt.minute.toString().padLeft(2, '0')}';
+  
+  notifications.add({
+    'id': report['id'],
+    'title': 'New ${report['incident_type'] ?? 'Unknown Incident'}',
+    'message': 'New incident reported in ${report['district'] ?? 'Unknown Location'}',
+    'time': formattedTime,
+    'read': false,
+    'priority': _getIncidentPriority(report['incident_type']),
+  });
+  
+  // Mark this incident as processed
+  processedIncidents[reportId] = true;
+}
       // Add after _checkForNewReports method
 
       
@@ -307,23 +320,59 @@ void _showNotificationsDialog() {
       }
       
       // Get recent reports (up to 10)
-      recentReports = incidents.take(10).map((incident) {
-        // Format time
-        final DateTime createdAt = DateTime.parse(incident['created_at']);
-        final String formattedTime = '${createdAt.hour.toString().padLeft(2, '0')}:${createdAt.minute.toString().padLeft(2, '0')}';
-        
-        return {
-          'id': incident['id'],
-          'title': incident['incident_type'] ?? 'Unknown Incident',
-          'district': incident['district'] ?? 'Unknown Location',
-          'time': formattedTime,
-          'priority': _getIncidentPriority(incident['incident_type']),
-          'status': incident['status'] ?? 'Pending',
-        };
-      }).toList();
+      // Get recent reports (up to 10)
+recentReports = incidents.take(10).map((incident) {
+  // Format time
+  final DateTime createdAt = DateTime.parse(incident['created_at']);
+  final String formattedTime = '${createdAt.hour.toString().padLeft(2, '0')}:${createdAt.minute.toString().padLeft(2, '0')}';
+  
+  // Add to processed incidents tracking
+  final String reportId = incident['id'].toString();
+  if (!processedIncidents.containsKey(reportId)) {
+    processedIncidents[reportId] = false;
+  }
+  
+  return {
+    'id': incident['id'],
+    'title': incident['incident_type'] ?? 'Unknown Incident',
+    'district': incident['district'] ?? 'Unknown Location',
+    'time': formattedTime,
+    'priority': _getIncidentPriority(incident['incident_type']),
+    'status': incident['status'] ?? 'Pending',
+  };
+}).toList();
+
+// Initialize filtered reports
+filteredReports = List.from(recentReports);
+
+// Check for any new reports that haven't been added to notifications yet
+if (lastFetchTime != null) {
+  // Find incidents that aren't in our processed list or are marked as not processed
+  for (var incident in incidents) {
+    final String reportId = incident['id'].toString();
+    
+    if (!processedIncidents.containsKey(reportId) || processedIncidents[reportId] == false) {
+      // Add this incident to notifications
+      final DateTime createdAt = DateTime.parse(incident['created_at']);
+      final String formattedTime = '${createdAt.hour.toString().padLeft(2, '0')}:${createdAt.minute.toString().padLeft(2, '0')}';
       
-      // Initialize filtered reports
-      filteredReports = List.from(recentReports);
+      notifications.add({
+        'id': incident['id'],
+        'title': 'New ${incident['incident_type'] ?? 'Unknown Incident'}',
+        'message': 'New incident reported in ${incident['district'] ?? 'Unknown Location'}',
+        'time': formattedTime,
+        'read': false,
+        'priority': _getIncidentPriority(incident['incident_type']),
+      });
+      
+      // Mark as processed
+      processedIncidents[reportId] = true;
+    }
+  }
+  
+  // Update unread notifications count
+  unreadNotifications = notifications.where((n) => n['read'] == false).length;
+}
       
       // Add this new code for notifications
       // If this is the first fetch, initialize lastFetchTime and create sample notifications
@@ -365,10 +414,28 @@ void _showNotificationsDialog() {
       ),
     );
   } finally {
-    setState(() {
-      _isLoading = false;
-    });
-  }
+  setState(() {
+    _isLoading = false;
+    _isRefreshing = false;
+  });
+} 
+}
+
+// Refresh dashboard data with visual feedback
+Future<void> _refreshDashboard() async {
+  setState(() {
+    _isRefreshing = true;
+  });
+  
+  await _fetchDashboardData();
+  
+  ScaffoldMessenger.of(context).showSnackBar(
+    const SnackBar(
+      content: Text('Dashboard refreshed'),
+      duration: Duration(seconds: 2),
+      behavior: SnackBarBehavior.floating,
+    ),
+  );
 }
   
   // Fetch recent activities for the dashboard
@@ -779,7 +846,7 @@ Widget build(BuildContext context) {
       backgroundColor: const Color(0xFF003366),
       elevation: 0,
       actions: [
-        // Replace the existing notification button with this Stack
+        // Notification button with badge
         Stack(
           children: [
             IconButton(
@@ -815,9 +882,20 @@ Widget build(BuildContext context) {
               ),
           ],
         ),
+        // Refresh button with loading indicator
         IconButton(
-          icon: const Icon(Icons.refresh, color: Colors.white),
-          onPressed: _fetchDashboardData,
+          icon: _isRefreshing 
+              ? SizedBox(
+                  width: 20, 
+                  height: 20, 
+                  child: CircularProgressIndicator(
+                    color: Colors.white,
+                    strokeWidth: 2,
+                  )
+                )
+              : const Icon(Icons.refresh, color: Colors.white),
+          onPressed: _isRefreshing ? null : _refreshDashboard,
+          tooltip: 'Refresh Dashboard',
         ),
       ],
     ),
@@ -1018,13 +1096,29 @@ Widget _buildStatCard(String title, String value, Color valueColor) {
           ),
         ),
         const SizedBox(height: 8),
-        Text(
-          value,
-          style: TextStyle(
-            fontSize: 36,
-            fontWeight: FontWeight.bold,
-            color: valueColor,
-          ),
+        Row(
+          children: [
+            Text(
+              value,
+              style: TextStyle(
+                fontSize: 36,
+                fontWeight: FontWeight.bold,
+                color: valueColor,
+              ),
+            ),
+            if (_isRefreshing)
+              Padding(
+                padding: const EdgeInsets.only(left: 8),
+                child: SizedBox(
+                  width: 16, 
+                  height: 16, 
+                  child: CircularProgressIndicator(
+                    strokeWidth: 2,
+                    valueColor: AlwaysStoppedAnimation<Color>(valueColor.withOpacity(0.5)),
+                  ),
+                ),
+              ),
+          ],
         ),
       ],
     ),
@@ -1106,7 +1200,7 @@ Widget _buildReportItem(Map<String, dynamic> report) {
     ),
   );
 }
-  Widget _buildDashboard() {
+ Widget _buildDashboard() {
   return Container(
     color: Colors.grey.shade100,
     child: _isLoading
@@ -1115,325 +1209,373 @@ Widget _buildReportItem(Map<String, dynamic> report) {
           color: Color(0xFF003366),
         ),
       )
-    : Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        // Top header area with emergency level
-        Container(
-          padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 16),
-          color: const Color(0xFF003366),
-          child: Row(
-            children: [
-              Expanded(
-                child: Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-                  decoration: BoxDecoration(
-                    color: Colors.black38,
-                    borderRadius: BorderRadius.circular(30),
+    : RefreshIndicator(
+        onRefresh: _refreshDashboard,
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            // Top header area with emergency level
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 16),
+              color: const Color(0xFF003366),
+              child: Row(
+                children: [
+                  Expanded(
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                      decoration: BoxDecoration(
+                        color: Colors.black38,
+                        borderRadius: BorderRadius.circular(30),
+                      ),
+                      child: Row(
+                        children: [
+                          const Icon(Icons.warning_amber, color: Colors.red),
+                          const SizedBox(width: 8),
+                          Text(
+                            'Emergency Level: $emergencyLevel',
+                            style: const TextStyle(
+                              color: Colors.white,
+                              fontWeight: FontWeight.w500,
+                            ),
+                          ),
+                          if (_isRefreshing)
+                            Padding(
+                              padding: const EdgeInsets.only(left: 8),
+                              child: SizedBox(
+                                width: 12,
+                                height: 12,
+                                child: CircularProgressIndicator(
+                                  strokeWidth: 2,
+                                  valueColor: AlwaysStoppedAnimation<Color>(Colors.white70),
+                                ),
+                              ),
+                            ),
+                        ],
+                      ),
+                    ),
                   ),
-                  child: Row(
-                    children: [
-                      const Icon(Icons.warning_amber, color: Colors.red),
-                      const SizedBox(width: 8),
-                      Text(
-                        'Emergency Level: $emergencyLevel',
-                        style: const TextStyle(
-                          color: Colors.white,
+                  const SizedBox(width: 16),
+                  ElevatedButton(
+                    onPressed: _showQuickAlertDialog,
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: Colors.red,
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(30),
+                      ),
+                      padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
+                    ),
+                    child: const Text('Quick Alert'),
+                  ),
+                ],
+              ),
+            ),
+            
+            // Status Cards
+            Expanded(
+              child: SingleChildScrollView(
+                physics: const AlwaysScrollableScrollPhysics(),
+                padding: const EdgeInsets.all(16),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    // Public Safety label
+                    Padding(
+                      padding: const EdgeInsets.only(left: 8, bottom: 8),
+                      child: Text(
+                        'Public Safety Control Center',
+                        style: TextStyle(
+                          color: Colors.grey.shade700,
                           fontWeight: FontWeight.w500,
                         ),
                       ),
-                    ],
-                  ),
-                ),
-              ),
-              const SizedBox(width: 16),
-              ElevatedButton(
-                onPressed: _showQuickAlertDialog,
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: Colors.red,
-                  shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(30),
-                  ),
-                  padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
-                ),
-                child: const Text('Quick Alert'),
-              ),
-            ],
-          ),
-        ),
-        
-        // Status Cards
-        Expanded(
-          child: SingleChildScrollView(
-            padding: const EdgeInsets.all(16),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                // Public Safety label
-                Padding(
-                  padding: const EdgeInsets.only(left: 8, bottom: 8),
-                  child: Text(
-                    'Public Safety Control Center',
-                    style: TextStyle(
-                      color: Colors.grey.shade700,
-                      fontWeight: FontWeight.w500,
                     ),
-                  ),
-                ),
-                
-                // Stats cards in a row for better space usage
-                Row(
-                  children: [
-                    Expanded(
-                      child: _buildStatCard('Active Cases', activeCase.toString(), Colors.blue.shade800),
+                    
+                    // Stats cards in a row for better space usage
+                    Row(
+                      children: [
+                        Expanded(
+                          child: _buildStatCard('Active Cases', activeCase.toString(), Colors.blue.shade800),
+                        ),
+                        const SizedBox(width: 12),
+                        Expanded(
+                          child: _buildStatCard('Critical Cases', criticalCases.toString(), Colors.red),
+                        ),
+                      ],
                     ),
-                    const SizedBox(width: 12),
-                    Expanded(
-                      child: _buildStatCard('Critical Cases', criticalCases.toString(), Colors.red),
+                    const SizedBox(height: 12),
+                    
+                    Row(
+                      children: [
+                        Expanded(
+                          child: _buildStatCard('New Reports Today', newReports.toString(), Colors.blue.shade800),
+                        ),
+                        const SizedBox(width: 12),
+                        Expanded(
+                          child: _buildStatCard('Response Rate', '92%', Colors.green),
+                        ),
+                      ],
                     ),
-                  ],
-                ),
-                const SizedBox(height: 12),
-                
-                Row(
-                  children: [
-                    Expanded(
-                      child: _buildStatCard('New Reports Today', newReports.toString(), Colors.blue.shade800),
-                    ),
-                    const SizedBox(width: 12),
-                    Expanded(
-                      child: _buildStatCard('Response Rate', '92%', Colors.green),
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 20),
-                
-                // District Activity Map
-                Container(
-                  margin: const EdgeInsets.only(bottom: 16),
-                  padding: const EdgeInsets.all(16),
-                  decoration: BoxDecoration(
-                    color: Colors.white,
-                    borderRadius: BorderRadius.circular(12),
-                    boxShadow: [
-                      BoxShadow(
-                        color: Colors.grey.shade300,
-                        blurRadius: 4,
-                        offset: const Offset(0, 2),
-                      ),
-                    ],
-                  ),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Row(
-                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                        children: [
-                          const Text(
-                            'District Activity Map',
-                            style: TextStyle(
-                              fontSize: 18,
-                              fontWeight: FontWeight.bold,
-                            ),
-                          ),
-                          ElevatedButton.icon(
-                            onPressed: _exportDistrictActivityMap,
-                            style: ElevatedButton.styleFrom(
-                              backgroundColor: const Color(0xFF003366),
-                              shape: RoundedRectangleBorder(
-                                borderRadius: BorderRadius.circular(20),
-                              ),
-                            ),
-                            icon: const Icon(Icons.download),
-                            label: const Text('Export PDF'),
+                    const SizedBox(height: 20),
+                    
+                    // District Activity Map
+                    Container(
+                      margin: const EdgeInsets.only(bottom: 16),
+                      padding: const EdgeInsets.all(16),
+                      decoration: BoxDecoration(
+                        color: Colors.white,
+                        borderRadius: BorderRadius.circular(12),
+                        boxShadow: [
+                          BoxShadow(
+                            color: Colors.grey.shade300,
+                            blurRadius: 4,
+                            offset: const Offset(0, 2),
                           ),
                         ],
                       ),
-                      const SizedBox(height: 12),
-                      // Simple map visualization placeholder
-                      Container(
-                        height: 200,
-                        width: double.infinity,
-                        decoration: BoxDecoration(
-                          color: Colors.grey.shade100,
-                          borderRadius: BorderRadius.circular(8),
-                          border: Border.all(color: Colors.grey.shade300),
-                        ),
-                        child: Center(
-                          child: Column(
-                            mainAxisAlignment: MainAxisAlignment.center,
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Row(
+                            mainAxisAlignment: MainAxisAlignment.spaceBetween,
                             children: [
-                              Icon(
-                                Icons.map,
-                                size: 48,
-                                color: Colors.grey.shade400,
-                              ),
-                              const SizedBox(height: 8),
-                              Text(
-                                'Interactive District Map',
+                              const Text(
+                                'District Activity Map',
                                 style: TextStyle(
-                                  color: Colors.grey.shade600,
+                                  fontSize: 18,
+                                  fontWeight: FontWeight.bold,
+                                ),
+                              ),
+                              ElevatedButton.icon(
+                                onPressed: _exportDistrictActivityMap,
+                                style: ElevatedButton.styleFrom(
+                                  backgroundColor: const Color(0xFF003366),
+                                  shape: RoundedRectangleBorder(
+                                    borderRadius: BorderRadius.circular(20),
+                                  ),
+                                ),
+                                icon: const Icon(Icons.download),
+                                label: const Text('Export PDF'),
+                              ),
+                            ],
+                          ),
+                          const SizedBox(height: 12),
+                          // Simple map visualization placeholder
+                          Container(
+                            height: 200,
+                            width: double.infinity,
+                            decoration: BoxDecoration(
+                              color: Colors.grey.shade100,
+                              borderRadius: BorderRadius.circular(8),
+                              border: Border.all(color: Colors.grey.shade300),
+                            ),
+                            child: Center(
+                              child: Column(
+                                mainAxisAlignment: MainAxisAlignment.center,
+                                children: [
+                                  Icon(
+                                    Icons.map,
+                                    size: 48,
+                                    color: Colors.grey.shade400,
+                                  ),
+                                  const SizedBox(height: 8),
+                                  Text(
+                                    'Interactive District Map',
+                                    style: TextStyle(
+                                      color: Colors.grey.shade600,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                    
+                    // Recent Reports
+                    Container(
+                      width: double.infinity,
+                      padding: const EdgeInsets.all(16),
+                      decoration: BoxDecoration(
+                        color: Colors.white,
+                        borderRadius: BorderRadius.circular(12),
+                        boxShadow: [
+                          BoxShadow(
+                            color: Colors.grey.shade300,
+                            blurRadius: 4,
+                            offset: const Offset(0, 2),
+                          ),
+                        ],
+                      ),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Row(
+                            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                            children: [
+                              Row(
+                                children: [
+                                  const Text(
+                                    'Recent Reports',
+                                    style: TextStyle(
+                                      fontSize: 18,
+                                      fontWeight: FontWeight.bold,
+                                    ),
+                                  ),
+                                  if (_isRefreshing)
+                                    Padding(
+                                      padding: const EdgeInsets.only(left: 8),
+                                      child: SizedBox(
+                                        width: 16,
+                                        height: 16,
+                                        child: CircularProgressIndicator(
+                                          strokeWidth: 2,
+                                          valueColor: AlwaysStoppedAnimation<Color>(Colors.blue.shade300),
+                                        ),
+                                      ),
+                                    ),
+                                ],
+                              ),
+                              Container(
+                                width: 200,
+                                height: 40,
+                                decoration: BoxDecoration(
+                                  color: Colors.grey.shade100,
+                                  borderRadius: BorderRadius.circular(20),
+                                ),
+                                child: TextField(
+                                  controller: _searchController,
+                                  decoration: const InputDecoration(
+                                    hintText: 'Search reports...',
+                                    prefixIcon: Icon(Icons.search),
+                                    border: InputBorder.none,
+                                    contentPadding: EdgeInsets.symmetric(vertical: 10),
+                                  ),
+                                  onChanged: _filterReports,
                                 ),
                               ),
                             ],
                           ),
-                        ),
+                          const SizedBox(height: 16),
+                          ...(filteredReports.isEmpty
+                              ? [
+                                  const Padding(
+                                    padding: EdgeInsets.symmetric(vertical: 20),
+                                    child: Center(
+                                      child: Text(
+                                        'No recent reports',
+                                        style: TextStyle(
+                                          color: Colors.grey,
+                                          fontSize: 16,
+                                        ),
+                                      ),
+                                    ),
+                                  )
+                                ]
+                              : filteredReports.map((report) => _buildReportItem(report)).toList()),
+                        ],
                       ),
-                    ],
-                  ),
-                ),
-                
-                // Recent Reports
-                Container(
-                  width: double.infinity,
-                  padding: const EdgeInsets.all(16),
-                  decoration: BoxDecoration(
-                    color: Colors.white,
-                    borderRadius: BorderRadius.circular(12),
-                    boxShadow: [
-                      BoxShadow(
-                        color: Colors.grey.shade300,
-                        blurRadius: 4,
-                        offset: const Offset(0, 2),
-                      ),
-                    ],
-                  ),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Row(
-                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                        children: [
-                          const Text(
-                            'Recent Reports',
-                            style: TextStyle(
-                              fontSize: 18,
-                              fontWeight: FontWeight.bold,
-                            ),
-                          ),
-                          Container(
-                            width: 200,
-                            height: 40,
-                            decoration: BoxDecoration(
-                              color: Colors.grey.shade100,
-                              borderRadius: BorderRadius.circular(20),
-                            ),
-                            child: TextField(
-                              controller: _searchController,
-                              decoration: const InputDecoration(
-                                hintText: 'Search reports...',
-                                prefixIcon: Icon(Icons.search),
-                                border: InputBorder.none,
-                                contentPadding: EdgeInsets.symmetric(vertical: 10),
-                              ),
-                              onChanged: _filterReports,
-                            ),
+                    ),
+                    
+                    // Recent Activity Log
+                    const SizedBox(height: 20),
+                    Container(
+                      width: double.infinity,
+                      padding: const EdgeInsets.all(16),
+                      decoration: BoxDecoration(
+                        color: Colors.white,
+                        borderRadius: BorderRadius.circular(12),
+                        boxShadow: [
+                          BoxShadow(
+                            color: Colors.grey.shade300,
+                            blurRadius: 4,
+                            offset: const Offset(0, 2),
                           ),
                         ],
                       ),
-                      const SizedBox(height: 16),
-                      ...(filteredReports.isEmpty
-                          ? [
-                              const Padding(
-                                padding: EdgeInsets.symmetric(vertical: 20),
-                                child: Center(
-                                  child: Text(
-                                    'No recent reports',
-                                    style: TextStyle(
-                                      color: Colors.grey,
-                                      fontSize: 16,
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Row(
+                            children: [
+                              const Text(
+                                'Recent Activities',
+                                style: TextStyle(
+                                  fontSize: 18,
+                                  fontWeight: FontWeight.bold,
+                                ),
+                              ),
+                              if (_isRefreshing)
+                                Padding(
+                                  padding: const EdgeInsets.only(left: 8),
+                                  child: SizedBox(
+                                    width: 16,
+                                    height: 16,
+                                    child: CircularProgressIndicator(
+                                      strokeWidth: 2,
+                                      valueColor: AlwaysStoppedAnimation<Color>(Colors.blue.shade300),
                                     ),
                                   ),
                                 ),
-                              )
-                            ]
-                          : filteredReports.map((report) => _buildReportItem(report)).toList()),
-                    ],
-                  ),
-                ),
-                
-                // Recent Activity Log
-                const SizedBox(height: 20),
-                Container(
-                  width: double.infinity,
-                  padding: const EdgeInsets.all(16),
-                  decoration: BoxDecoration(
-                    color: Colors.white,
-                    borderRadius: BorderRadius.circular(12),
-                    boxShadow: [
-                      BoxShadow(
-                        color: Colors.grey.shade300,
-                        blurRadius: 4,
-                        offset: const Offset(0, 2),
-                      ),
-                    ],
-                  ),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      const Text(
-                        'Recent Activities',
-                        style: TextStyle(
-                          fontSize: 18,
-                          fontWeight: FontWeight.bold,
-                        ),
-                      ),
-                      const SizedBox(height: 16),
-                      if (recentActivities.isEmpty)
-                        Padding(
-                          padding: const EdgeInsets.symmetric(vertical: 20),
-                          child: Center(
-                            child: Text(
-                              'No recent activities',
-                              style: TextStyle(
-                                color: Colors.grey,
-                                fontSize: 16,
-                              ),
-                            ),
+                            ],
                           ),
-                        )
-                      else
-                        ListView.builder(
-                          shrinkWrap: true,
-                          physics: const NeverScrollableScrollPhysics(),
-                          itemCount: recentActivities.length,
-                          itemBuilder: (context, index) {
-                            final activity = recentActivities[index];
-                            final DateTime createdAt = DateTime.parse(activity['created_at']);
-                            final String formattedTime = '${createdAt.hour.toString().padLeft(2, '0')}:${createdAt.minute.toString().padLeft(2, '0')}';
-                            
-                            return ListTile(
-                              contentPadding: EdgeInsets.zero,
-                              leading: CircleAvatar(
-                                backgroundColor: Colors.blue.shade100,
-                                child: const Icon(Icons.history, color: Color(0xFF003366)),
-                              ),
-                              title: Text(
-                                activity['action'] ?? 'Unknown action',
-                                style: const TextStyle(fontWeight: FontWeight.bold),
-                              ),
-                              subtitle: Text(
-                                'Case: ${activity['incidents']['incident_type']}',
-                              ),
-                              trailing: Text(
-                                formattedTime,
-                                style: TextStyle(
-                                  color: Colors.grey.shade600,
-                                  fontSize: 14,
+                          const SizedBox(height: 16),
+                          if (recentActivities.isEmpty)
+                            Padding(
+                              padding: const EdgeInsets.symmetric(vertical: 20),
+                              child: Center(
+                                child: Text(
+                                  'No recent activities',
+                                  style: TextStyle(
+                                    color: Colors.grey,
+                                    fontSize: 16,
+                                  ),
                                 ),
                               ),
-                            );
-                          },
-                        ),
-                    ],
-                  ),
+                            )
+                          else
+                            ListView.builder(
+                              shrinkWrap: true,
+                              physics: const NeverScrollableScrollPhysics(),
+                              itemCount: recentActivities.length,
+                              itemBuilder: (context, index) {
+                                final activity = recentActivities[index];
+                                final DateTime createdAt = DateTime.parse(activity['created_at']);
+                                final String formattedTime = '${createdAt.hour.toString().padLeft(2, '0')}:${createdAt.minute.toString().padLeft(2, '0')}';
+                                
+                                return ListTile(
+                                  contentPadding: EdgeInsets.zero,
+                                  leading: CircleAvatar(
+                                    backgroundColor: Colors.blue.shade100,
+                                    child: const Icon(Icons.history, color: Color(0xFF003366)),
+                                  ),
+                                  title: Text(
+                                    activity['action'] ?? 'Unknown action',
+                                    style: const TextStyle(fontWeight: FontWeight.bold),
+                                  ),
+                                  subtitle: Text(
+                                    'Case: ${activity['incidents']['incident_type']}',
+                                  ),
+                                  trailing: Text(
+                                    formattedTime,
+                                    style: TextStyle(
+                                      color: Colors.grey.shade600,
+                                      fontSize: 14,
+                                    ),
+                                  ),
+                                );
+                              },
+                            ),
+                        ],
+                      ),
+                    ),
+                  ],
                 ),
-              ],
+              ),
             ),
-          ),
+          ],
         ),
-      ],
-    ),
+      ),
   );
 }
 Widget _buildAddAdminForm() {
