@@ -565,33 +565,34 @@ bool _isCoordinateInUganda(double lat, double lon) {
     }
   }
 
-  // Method to upload a file to your server
-  Future<String> _uploadFile(PlatformFile file) async {
-    try {
-        final supabase = Supabase.instance.client;
-        final filePath = 'incident-files/${DateTime.now().millisecondsSinceEpoch}_${file.name}'; // Unique file path
-
-        final bytes = await File(file.path!).readAsBytes();
-
-        await supabase.storage.from('incident-files').uploadBinary(
-            filePath,
-            bytes,
-            fileOptions: FileOptions(
-                contentType: _getContentType(file.name),
-                upsert: false,
-            )
-        );
-
-        final publicUrl = supabase.storage.from('incident-files').getPublicUrl(filePath);
-        print('File URL: $publicUrl');
-
-        return publicUrl;
-
-    } catch (e) {
-        print('Error uploading file: $e');
-        return 'ERROR: $e';
+Future<String> _uploadFile(PlatformFile file) async {
+  try {
+    final supabase = Supabase.instance.client;
+    final filePath = 'incident-files/${DateTime.now().millisecondsSinceEpoch}_${file.name}';
+    
+    // Use file.bytes directly instead of reading from path
+    final bytes = file.bytes;
+    if (bytes == null) {
+      throw Exception('File bytes are null');
     }
+
+    await supabase.storage.from('incident-files').uploadBinary(
+      filePath,
+      bytes,
+      fileOptions: FileOptions(
+        contentType: _getContentType(file.name),
+        upsert: false,
+      )
+    );
+
+    final publicUrl = supabase.storage.from('incident-files').getPublicUrl(filePath);
+    print('File URL: $publicUrl');
+    return publicUrl;
+  } catch (e) {
+    print('Error uploading file: $e');
+    throw Exception('Failed to upload file: ${file.name}. Error: $e');
   }
+}
   
   // Method to determine content type based on file extension
   String _getContentType(String fileName) {
