@@ -80,6 +80,34 @@ void initState() {
     }
   }
 
+String getFormattedLocation(Map<String, dynamic> report) {
+  // Extract location data
+  final locationParts = <String>[];
+  
+  // Check for structured location data (region, district, village)
+  if (report['region'] != null && report['region'] != 'Unknown Region') {
+    locationParts.add(report['region']);
+  }
+  
+  // Always add district if available, and clearly label it as a district
+  if (report['district'] != null && report['district'] != 'Unknown District') {
+    locationParts.add("${report['district']} District");
+  }
+  
+  if (report['village'] != null && report['village'] != 'Unknown Village') {
+    locationParts.add(report['village']);
+  }
+  
+  // Rest of your existing method...
+  
+  // If we have no location information at all
+  if (locationParts.isEmpty) {
+    return report['location'] ?? 'Unknown location';
+  }
+  
+  return locationParts.join(', ');
+}
+
   @override
   Widget build(BuildContext context) {
     final report = widget.report;
@@ -183,7 +211,7 @@ Widget _buildDetailsTab(Map<String, dynamic> report) {
             _buildInfoRow('Title:', title),
             _buildInfoRow('Reference:', reference),
             _buildInfoRow('Category:', category),
-            _buildInfoRow('Location:', location),
+            _buildInfoRow('Location:', getFormattedLocation(report)),
             _buildInfoRow('Reported on:', _formatDate(createdAt)),
             if (createdAt != updatedAt)
               _buildInfoRow('Last update:', _formatDate(updatedAt)),

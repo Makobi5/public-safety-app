@@ -266,6 +266,61 @@ Future<void> _fetchCaseDetails() async {
     });
   }
 }
+String _getFormattedLocation() {
+  // Check if we have detailed location information
+  final locationParts = <String>[];
+  
+  // Check for region, district, village (in that order)
+  if (_incidentData!['region'] != null && _incidentData!['region'] != 'Unknown Region') {
+    locationParts.add(_incidentData!['region']);
+  }
+  
+  // Always add district if available, and clearly label it as a district
+  if (_incidentData!['district'] != null && _incidentData!['district'] != 'Unknown District') {
+    locationParts.add("${_incidentData!['district']} District");
+  }
+  
+  if (_incidentData!['village'] != null && _incidentData!['village'] != 'Unknown Village') {
+    locationParts.add(_incidentData!['village']);
+  }
+  
+  // Rest of your existing method...
+  
+  // If we have no location information at all
+  if (locationParts.isEmpty) {
+    return 'Location not provided';
+  }
+  
+  return locationParts.join(', ');
+}
+
+String _getLocationSummary() {
+  // First try to get district
+  if (_incidentData!['district'] != null && 
+      _incidentData!['district'] != 'Unknown District') {
+    return _incidentData!['district'];
+  }
+  
+  // Then try region
+  if (_incidentData!['region'] != null && 
+      _incidentData!['region'] != 'Unknown Region') {
+    return _incidentData!['region'];
+  }
+  
+  // Then try village
+  if (_incidentData!['village'] != null && 
+      _incidentData!['village'] != 'Unknown Village') {
+    return _incidentData!['village'];
+  }
+  
+  // If we have coordinates but no named location
+  if (_incidentData!['latitude'] != null && _incidentData!['longitude'] != null) {
+    return 'Location recorded';
+  }
+  
+  return 'Unknown Location';
+}
+
   // Update case status
   Future<void> _updateCaseStatus(String newStatus) async {
     setState(() {
@@ -773,7 +828,7 @@ Widget build(BuildContext context) {
                               ),
                               const SizedBox(width: 4),
                               Text(
-                                _incidentData!['district'] ?? 'Unknown Location',
+                                _getLocationSummary(),
                                 style: const TextStyle(
                                   color: Colors.white70,
                                 ),
@@ -910,8 +965,7 @@ Widget build(BuildContext context) {
                                       _reporterName ?? 'Anonymous'),
                                   _buildInfoRow(
                                       'Location Details',
-                                      _incidentData!['location_details'] ??
-                                          'Not provided'),
+                                      _getFormattedLocation()),
                                   _buildInfoRow(
                                       'Description',
                                       _incidentData!['description'] ??
@@ -946,28 +1000,28 @@ Widget build(BuildContext context) {
                                   ),
                                   const SizedBox(height: 16),
                                   DropdownButtonFormField<String>(
-  decoration: InputDecoration(
-    labelText: 'Select Status',
-    border: OutlineInputBorder(
-      borderRadius: BorderRadius.circular(8),
-    ),
-  ),
-  // Make sure this value actually exists in your items list
-  value: _statusOptions.contains(_incidentData!['status']) 
-      ? _incidentData!['status'] 
-      : _statusOptions.first,
-  items: _statusOptions.map((status) {
-    return DropdownMenuItem<String>(
-      value: status,
-      child: Text(status),
-    );
-  }).toList(),
-  onChanged: (value) {
-    if (value != null && value != _incidentData!['status']) {
-      _updateCaseStatus(value);
-    }
-  },
-)
+                                      decoration: InputDecoration(
+                                        labelText: 'Select Status',
+                                        border: OutlineInputBorder(
+                                            borderRadius: BorderRadius.circular(8),
+                                        ),
+                                      ),
+                                      // Make sure this value actually exists in your items list
+                                      value: _statusOptions.contains(_incidentData!['status']) 
+                                          ? _incidentData!['status'] 
+                                          : _statusOptions.first,
+                                      items: _statusOptions.map((status) {
+                                        return DropdownMenuItem<String>(
+                                          value: status,
+                                          child: Text(status),
+                                        );
+                                      }).toList(),
+                                      onChanged: (value) {
+                                        if (value != null && value != _incidentData!['status']) {
+                                          _updateCaseStatus(value);
+                                        }
+                                      },
+                                    )
                                 ],
                               ),
                             ),

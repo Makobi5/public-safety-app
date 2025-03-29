@@ -1,4 +1,4 @@
-// lib/screens/incident_report_form.dart
+// Updated incident_report_form.dart with GPS location
 
 import 'package:flutter/material.dart';
 import 'dart:io';
@@ -9,6 +9,13 @@ import 'dart:convert';
 import 'package:http/http.dart' as http;
 import 'package:http_parser/http_parser.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
+import 'package:geolocator/geolocator.dart'; // Add this package
+import 'package:geocoding/geocoding.dart'; // Add this package
+import 'dart:convert';
+import 'package:http/http.dart' as http;
+import '/config/api_keys.dart';
+import 'dart:convert';
+import '../utils/uganda_regions_mapper.dart';
 
 class IncidentReportFormPage extends StatefulWidget {
   const IncidentReportFormPage({Key? key}) : super(key: key);
@@ -27,7 +34,21 @@ class _IncidentReportFormPageState extends State<IncidentReportFormPage> {
   DateTime? _selectedDate;
   TimeOfDay? _selectedTime;
   int _currentStep = 0;
-
+  
+  // Location variables
+  Position? _currentPosition;
+  String _locationAddress = "Location not captured yet";
+  bool _isCapturingLocation = false;
+  double? _latitude;
+  double? _longitude;
+  
+  // More detailed location information
+  String? _detectedRegion;
+  String? _detectedDistrict;
+  String? _detectedVillage;
+  final _additionalLocationController = TextEditingController();
+  final _landmarkController = TextEditingController();
+  
   @override
   void dispose() {
     _descriptionController.dispose();
@@ -35,9 +56,6 @@ class _IncidentReportFormPageState extends State<IncidentReportFormPage> {
     _landmarkController.dispose();
     _witnessInfoController.dispose();
     _additionalNotesController.dispose();
-    _otherRegionController.dispose();
-    _otherDistrictController.dispose();
-    _otherVillageController.dispose();
     super.dispose();
   }
 
@@ -161,57 +179,258 @@ class _IncidentReportFormPageState extends State<IncidentReportFormPage> {
     }
   }
   
-  // Helper method to get formatted location text for review
-  String _getLocationText() {
-    if (_selectedVillage == null) {
-      return 'Not specified';
-    }
-    
-    String locationText = '';
-    
-    // Add village/area
-    if (_selectedVillage == 'Other' && _otherVillageController.text.isNotEmpty) {
-      locationText = _otherVillageController.text;
-    } else {
-      locationText = _selectedVillage!;
-    }
-    
-    // Add district
-    if (_selectedDistrict != null) {
-      String districtText = _selectedDistrict!;
-      if (_selectedDistrict == 'Other' && _otherDistrictController.text.isNotEmpty) {
-        districtText = _otherDistrictController.text;
+  // Location permission handling
+  Future<bool> _handleLocationPermission() async {
+    bool serviceEnabled;
+    LocationPermission permission;
+
+    // Test if location services are enabled
+    serviceEnabled = await Geolocator.isLocationServiceEnabled();
+    if (!serviceEnabled) {
+      // Location services are disabled, show dialog to enable
+      await _showLocationServiceDialog();
+      // Check again after user interaction
+      serviceEnabled = await Geolocator.isLocationServiceEnabled();
+      if (!serviceEnabled) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Location services are disabled. Please enable location to continue.')),
+        );
+        return false;
       }
-      locationText = '$locationText, $districtText';
     }
-    
-    // Add region
-    if (_selectedRegion != null && _selectedRegion != 'Other') {
-      locationText = '$locationText, $_selectedRegion';
-    } else if (_selectedRegion == 'Other' && _otherRegionController.text.isNotEmpty) {
-      locationText = '$locationText, ${_otherRegionController.text}';
+
+    // Check location permission
+    permission = await Geolocator.checkPermission();
+    if (permission == LocationPermission.denied) {
+      permission = await Geolocator.requestPermission();
+      if (permission == LocationPermission.denied) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Location permissions are denied')),
+        );
+        return false;
+      }
     }
-    
-    // Add landmark reference if provided
-    if (_landmarkController.text.isNotEmpty) {
-      locationText = '$locationText (Near ${_landmarkController.text})';
+
+    if (permission == LocationPermission.deniedForever) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Location permissions are permanently denied, please enable them in settings')),
+      );
+      return false;
     }
-    
-    return locationText;
+
+    return true;
   }
+
+  // Show dialog to prompt user to enable location services
+  Future<void> _showLocationServiceDialog() async {
+    return showDialog<void>(
+      context: context,
+      barrierDismissible: false,
+      builder: (BuildContext context) {
+        return AlertDialog(
+          title: const Text('Location Services Disabled'),
+          content: const SingleChildScrollView(
+            child: ListBody(
+              children: <Widget>[
+                Text('To submit your incident report, we need your location.'),
+                Text('Please enable location services to continue.'),
+              ],
+            ),
+          ),
+          actions: <Widget>[
+            TextButton(
+              child: const Text('Cancel'),
+              onPressed: () {
+                Navigator.of(context).pop();
+              },
+            ),
+            TextButton(
+              child: const Text('Open Settings'),
+              onPressed: () {
+                Navigator.of(context).pop();
+                Geolocator.openLocationSettings();
+              },
+            ),
+          ],
+        );
+      },
+    );
+  }
+
+ // Update the _getCurrentLocation method to use OSM
+Future<void> _getCurrentLocation() async {
+  setState(() {
+    _isCapturingLocation = true;
+  });
+
+  final hasPermission = await _handleLocationPermission();
+  if (!hasPermission) {
+    setState(() {
+      _isCapturingLocation = false;
+      // Set default values for required fields
+      _detectedRegion = "Unknown Region";
+      _detectedDistrict = "Unknown District";
+      _detectedVillage = "Unknown Village";
+    });
+    return;
+  }
+
+  try {
+    Position position = await Geolocator.getCurrentPosition(
+      desiredAccuracy: LocationAccuracy.high,
+    );
+
+    setState(() {
+      _currentPosition = position;
+      _latitude = position.latitude;
+      _longitude = position.longitude;
+    });
+
+    // Get address from coordinates using OSM
+    await _getAddressFromOSM();
+  } catch (e) {
+    debugPrint('Error getting location: $e');
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text('Could not get location: $e')),
+    );
+    
+    // Set default values for required fields if location fails
+    setState(() {
+      _detectedRegion = "Unknown Region";
+      _detectedDistrict = "Unknown District";
+      _detectedVillage = "Unknown Village";
+    });
+  } finally {
+    setState(() {
+      _isCapturingLocation = false;
+    });
+  }
+}
+
+Future<void> _getAddressFromOSM() async {
+  try {
+    if (_currentPosition != null) {
+      setState(() {
+        _locationAddress = "Retrieving address...";
+        // Initialize with default values for required fields
+        _detectedRegion = "Unknown Region";
+        _detectedDistrict = "Unknown District";
+        _detectedVillage = "Unknown Village";
+      });
+      
+      final lat = _currentPosition!.latitude;
+      final lon = _currentPosition!.longitude;
+      
+      // Using Nominatim API (OpenStreetMap's geocoding service)
+      final url = 'https://nominatim.openstreetmap.org/reverse'
+          '?format=json'
+          '&lat=$lat'
+          '&lon=$lon'
+          '&zoom=18'
+          '&addressdetails=1';
+      
+      print('Calling OSM Nominatim API: $url');
+      
+      // Add a user agent as required by Nominatim's usage policy
+      final response = await http.get(
+        Uri.parse(url),
+        headers: {
+          'User-Agent': 'CommunityAppSafeWatch/1.0',
+          'Accept-Language': 'en', // Specify language if needed
+        },
+      );
+      
+      if (response.statusCode == 200) {
+        final data = json.decode(response.body);
+        print('OSM API response: ${response.body}');
+        
+        // Get the formatted address
+        final formattedAddress = data['display_name'];
+        
+        // Extract more detailed components
+        final addressParts = data['address'];
+        String? village, district, country;
+        
+        // Try to extract village or equivalent (most specific)
+        village = addressParts['village'] ?? 
+                 addressParts['hamlet'] ?? 
+                 addressParts['suburb'] ??
+                 addressParts['neighbourhood'] ??
+                 addressParts['city_district'] ??
+                 addressParts['town'] ??
+                 addressParts['city'];
+                 
+        // Try to extract district or equivalent (mid-level admin)
+        district = addressParts['county'] ?? 
+                  addressParts['district'] ?? 
+                  addressParts['state_district'];
+                  
+        country = addressParts['country'];
+        
+        // Update state variables
+        setState(() {
+          _locationAddress = formattedAddress;
+          
+          // Set village if available
+          if (village != null && village.isNotEmpty) {
+            _detectedVillage = village;
+          }
+          
+          // Set district if available
+          if (district != null && district.isNotEmpty) {
+            _detectedDistrict = district;
+            
+            // Use our Uganda mapping to get the correct region based on district
+            if (country == 'Uganda' || _isCoordinateInUganda(lat, lon)) {
+              _detectedRegion = UgandaRegionsMapper.getRegionForDistrict(district);
+            } else {
+              _detectedRegion = addressParts['state'] ?? 
+                               addressParts['region'] ?? 
+                               'Unknown Region';
+            }
+          }
+          
+          // Store coordinates for database
+          _latitude = lat;
+          _longitude = lon;
+        });
+        
+        print('Address successfully retrieved: $_locationAddress');
+        print('Region: $_detectedRegion, District: $_detectedDistrict, Village: $_detectedVillage');
+      } else {
+        setState(() {
+          _locationAddress = "Error retrieving address (HTTP ${response.statusCode})";
+          // Keep the default values already set
+        });
+        print('HTTP error: ${response.statusCode}');
+        print('Response body: ${response.body}');
+      }
+    }
+  } catch (e) {
+    print('Error getting address from OSM: $e');
+    print(StackTrace.current); // Print stack trace for debugging
+    
+    if (_currentPosition != null) {
+      setState(() {
+        _locationAddress = "Error retrieving address (Coordinates: ${_currentPosition!.latitude.toStringAsFixed(6)}, ${_currentPosition!.longitude.toStringAsFixed(6)})";
+        // Ensure coordinates are still captured even if address lookup fails
+        _latitude = _currentPosition!.latitude;
+        _longitude = _currentPosition!.longitude;
+        // Default values were already set at the beginning
+      });
+    }
+  }
+}
+// Helper method to determine if coordinates are likely in Uganda
+bool _isCoordinateInUganda(double lat, double lon) {
+  // Approximate bounding box for Uganda
+  const double minLat = -1.5; // Southern border
+  const double maxLat = 4.3;  // Northern border
+  const double minLon = 29.5; // Western border
+  const double maxLon = 35.0; // Eastern border
   
-  // Store selected values for review
-  String? _selectedDistrict;
-  String? _selectedRegion;
-  String? _selectedVillage;
-  final _additionalLocationController = TextEditingController();
-  final _landmarkController = TextEditingController();
-  final _otherRegionController = TextEditingController();
-  final _otherDistrictController = TextEditingController();
-  final _otherVillageController = TextEditingController();
-  bool _isOtherRegion = false;
-  bool _isOtherDistrict = false;
-  bool _isOtherVillage = false;
+  return lat >= minLat && lat <= maxLat && lon >= minLon && lon <= maxLon;
+}
   
   // Evidence and submission data
   List<PlatformFile> _uploadedFiles = [];
@@ -224,80 +443,6 @@ class _IncidentReportFormPageState extends State<IncidentReportFormPage> {
   
   final _witnessInfoController = TextEditingController();
   final _additionalNotesController = TextEditingController();
-  
-  // List of Ugandan regions (copied from signup form)
-  final List<String> _ugandanRegions = [
-    'Central Region',
-    'Eastern Region',
-    'Northern Region',
-    'Western Region',
-    'Other',
-  ];
-
-  // Map of regions to districts in Uganda (copied from signup form)
-  final Map<String, List<String>> _regionDistricts = {
-    'Central Region': [
-      'Kampala', 'Wakiso', 'Mukono', 'Mpigi', 'Buikwe', 'Kayunga', 'Luweero', 
-      'Mityana', 'Nakaseke', 'Nakasongola', 'Butambala', 'Gomba', 'Kalangala', 
-      'Kyankwanzi', 'Lwengo', 'Lyantonde', 'Masaka', 'Mubende', 'Rakai', 'Sembabule',
-      'Other'
-    ],
-    'Eastern Region': [
-      'Jinja', 'Iganga', 'Mbale', 'Tororo', 'Soroti', 'Kumi', 'Bugiri', 'Busia', 
-      'Namutumba', 'Budaka', 'Bududa', 'Bukwa', 'Bulambuli', 'Butaleja', 'Buyende', 
-      'Kaberamaido', 'Kaliro', 'Kamuli', 'Kapchorwa', 'Katakwi', 'Kibuku', 'Kween', 
-      'Luuka', 'Manafwa', 'Mayuge', 'Namayingo', 'Ngora', 'Pallisa', 'Serere', 'Sironko',
-      'Other'
-    ],
-    'Northern Region': [
-      'Gulu', 'Lira', 'Kitgum', 'Arua', 'Adjumani', 'Amuru', 'Amolatar', 'Pader', 
-      'Nebbi', 'Zombo', 'Abim', 'Agago', 'Alebtong', 'Amuru', 'Apac', 'Dokolo', 
-      'Kaabong', 'Koboko', 'Kole', 'Kotido', 'Lamwo', 'Maracha', 'Moroto', 
-      'Moyo', 'Nakapiripirit', 'Napak', 'Nwoya', 'Otuke', 'Oyam', 'Yumbe',
-      'Other'
-    ],
-    'Western Region': [
-      'Mbarara', 'Kabale', 'Fort Portal', 'Kasese', 'Hoima', 'Masindi', 'Bushenyi', 
-      'Ntungamo', 'Rukungiri', 'Kibaale', 'Buliisa', 'Bundibugyo', 'Ibanda', 'Isingiro', 
-      'Kamwenge', 'Kanungu', 'Kiruhura', 'Kiryandongo', 'Kisoro', 'Kyegegwa', 
-      'Kyenjojo', 'Mitooma', 'Ntoroko', 'Rubirizi', 'Sheema',
-      'Other'
-    ],
-    'Other': ['Other'],
-  };
-
-  // Map of districts to villages
-  final Map<String, List<String>> _districtVillages = {
-    // Central Region
-    'Kampala': ['Kololo', 'Nakasero', 'Kamwokya', 'Bugolobi', 'Naguru', 'Bukoto', 'Makindye', 'Nsambya', 'Rubaga', 'Kawempe', 'Kisenyi', 'Mengo', 'Wandegeya', 'Ntinda', 'Kibuli', 'Other'],
-    'Wakiso': ['Entebbe', 'Nansana', 'Kira', 'Busukuma', 'Kajjansi', 'Bweyogerere', 'Buloba', 'Matugga', 'Kakiri', 'Nsangi', 'Namugongo', 'Gayaza', 'Kasangati', 'Bwebajja', 'Nalumunye', 'Other'],
-    'Mukono': ['Mukono Town', 'Goma', 'Kyampisi', 'Nakifuma', 'Kasawo', 'Namuganga', 'Ntunda', 'Mpatta', 'Mpunge', 'Koome', 'Nsanja', 'Seeta', 'Kyabalogo', 'Kikandwa', 'Nakisunga', 'Other'],
-    
-    // Eastern Region
-    'Jinja': ['Bugembe', 'Kakira', 'Mafubira', 'Budondo', 'Buwenge', 'Mpumudde', 'Walukuba', 'Masese', 'Butembe', 'Danida', 'Kimaka', 'Nalufenya', 'Buye', 'Buyala', 'Namulesa', 'Other'],
-    'Mbale': ['Nkoma', 'Wanale', 'Bungokho', 'Nakaloke', 'Bufumbo', 'Busiu', 'Bubyangu', 'Bukonde', 'Busano', 'Busoba', 'Lwaso', 'Namanyonyi', 'Nyondo', 'Wanale', 'Industrial', 'Other'],
-    'Soroti': ['Soroti Town', 'Arapai', 'Gweri', 'Kamuda', 'Tubur', 'Asuret', 'Katine', 'Ochapa', 'Olio', 'Asuret', 'Lalle', 'Opuyo', 'Madera', 'Aloet', 'Acetgwen', 'Other'],
-    
-    // Northern Region
-    'Gulu': ['Laroo', 'Bardege', 'Layibi', 'Pece', 'Unyama', 'Bobi', 'Bungatira', 'Palaro', 'Patiko', 'Awach', 'Ongako', 'Lalogi', 'Odek', 'Lakwana', 'Koro', 'Other'],
-    'Lira': ['Adyel', 'Central', 'Ojwina', 'Railway', 'Adekokwok', 'Agali', 'Agweng', 'Aromo', 'Barr', 'Lira', 'Ogur', 'Amach', 'Agweng', 'Ngetta', 'Adekokwok', 'Other'],
-    'Arua': ['Arua Hill', 'River Oli', 'Adumi', 'Aroi', 'Dadamu', 'Manibe', 'Oluko', 'Pajulu', 'Vurra', 'Ayivuni', 'Logiri', 'Rhino Camp', 'Rigbo', 'Uleppi', 'Omugo', 'Other'],
-    
-    // Western Region
-    'Mbarara': ['Kakoba', 'Nyamitanga', 'Kamukuzi', 'Kakiika', 'Biharwe', 'Rubindi', 'Rubaya', 'Rwanyamahembe', 'Kashare', 'Bubaare', 'Nyakayojo', 'Bukiro', 'Kagongi', 'Rugando', 'Ndeija', 'Other'],
-    'Kabale': ['Kabale Town', 'Kitumba', 'Kyanamira', 'Maziba', 'Buhara', 'Kaharo', 'Kamuganguzi', 'Rubaya', 'Butanda', 'Ikumba', 'Hamurwa', 'Bukinda', 'Kamwezi', 'Rwamucucu', 'Kashambya', 'Other'],
-    'Hoima': ['Hoima Town', 'Bugahya', 'Buhimba', 'Kigorobya', 'Kitoba', 'Kyabigambire', 'Buhanika', 'Kiziranfumbi', 'Kabwoya', 'Kyangwali', 'Bujumbura', 'Busiisi', 'Kahoora', 'Mparo', 'Buseruka', 'Other'],
-    
-    // For other districts
-    'Other': ['Other'],
-    
-    // Default villages for any district not explicitly listed
-    'Default': ['Center', 'North', 'South', 'East', 'West', 'Main Village', 'Trading Center', 'Township', 'Rural Area', 'Suburb', 'Other']
-  };
-  
-  // Lists for dropdowns
-  List<String> _districts = [];
-  List<String> _villages = [];
 
   // API endpoints
   final String _fileUploadEndpoint = 'https://hkggxkyzyjptapnqbdlc.supabase.co/storage/v1/object/public/incident-files';
@@ -392,6 +537,8 @@ class _IncidentReportFormPageState extends State<IncidentReportFormPage> {
     return Icons.insert_drive_file;
   }
 
+  
+
   // Get the file type label
   String _getFileTypeLabel(String fileName) {
     final extension = fileName.split('.').last.toLowerCase();
@@ -419,8 +566,7 @@ class _IncidentReportFormPageState extends State<IncidentReportFormPage> {
   }
 
   // Method to upload a file to your server
-// Method to upload a file to your server
-Future<String> _uploadFile(PlatformFile file) async {
+  Future<String> _uploadFile(PlatformFile file) async {
     try {
         final supabase = Supabase.instance.client;
         final filePath = 'incident-files/${DateTime.now().millisecondsSinceEpoch}_${file.name}'; // Unique file path
@@ -445,7 +591,8 @@ Future<String> _uploadFile(PlatformFile file) async {
         print('Error uploading file: $e');
         return 'ERROR: $e';
     }
-}
+  }
+  
   // Method to determine content type based on file extension
   String _getContentType(String fileName) {
     final extension = fileName.split('.').last.toLowerCase();
@@ -475,35 +622,136 @@ Future<String> _uploadFile(PlatformFile file) async {
     }
   }
 
-  // Method to save incident data to your database
+  // Build location section (replaced form fields with GPS capture)
+  Widget _buildLocationSection() {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: Colors.grey.shade200),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Text(
+            'Location Information',
+            style: TextStyle(
+              fontSize: 18,
+              fontWeight: FontWeight.bold,
+            ),
+          ),
+          const SizedBox(height: 16),
+          
+          // GPS location status
+          Container(
+            padding: const EdgeInsets.all(16),
+            decoration: BoxDecoration(
+              color: _currentPosition != null ? Colors.green.shade50 : Colors.orange.shade50,
+              borderRadius: BorderRadius.circular(8),
+              border: Border.all(
+                color: _currentPosition != null ? Colors.green.shade200 : Colors.orange.shade200,
+              ),
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    Icon(
+                      _currentPosition != null ? Icons.location_on : Icons.location_off,
+                      color: _currentPosition != null ? Colors.green : Colors.orange,
+                    ),
+                    const SizedBox(width: 8),
+                    Text(
+                      _currentPosition != null ? 'Location captured' : 'Location not captured',
+                      style: TextStyle(
+                        fontWeight: FontWeight.bold,
+                        color: _currentPosition != null ? Colors.green.shade700 : Colors.orange.shade700,
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 8),
+                if (_currentPosition != null) ...[
+                  Text('Address: $_locationAddress'),
+                  const SizedBox(height: 4),
+                  Text('Coordinates: ${_currentPosition!.latitude.toStringAsFixed(6)}, ${_currentPosition!.longitude.toStringAsFixed(6)}'),
+                ] else ...[
+                  const Text('Your location will be automatically captured when you submit the report.'),
+                ],
+                const SizedBox(height: 12),
+                Center(
+                  child: ElevatedButton.icon(
+                    onPressed: _isCapturingLocation ? null : _getCurrentLocation,
+                    icon: _isCapturingLocation 
+                        ? const SizedBox(
+                            width: 20,
+                            height: 20,
+                            child: CircularProgressIndicator(
+                              strokeWidth: 2,
+                              valueColor: AlwaysStoppedAnimation<Color>(Colors.white),
+                            ),
+                          )
+                        : const Icon(Icons.my_location),
+                    label: Text(_isCapturingLocation ? 'Capturing...' : _currentPosition != null ? 'Refresh Location' : 'Capture Location'),
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: const Color(0xFF003366),
+                      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+          
+          const SizedBox(height: 20),
+          const Text(
+            'Additional Location Details',
+            style: TextStyle(
+              fontSize: 16,
+              fontWeight: FontWeight.w500,
+            ),
+          ),
+          const SizedBox(height: 8),
+          TextFormField(
+            controller: _additionalLocationController,
+            decoration: InputDecoration(
+              hintText: 'Provide any additional details about the location',
+              border: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(8),
+              ),
+              contentPadding: const EdgeInsets.all(16),
+            ),
+            maxLines: 3,
+          ),
 
-  // Method to save incident data to your database
-  Future<bool> _saveIncidentToDatabase(Map<String, dynamic> incidentData) async {
-    try {
-      final response = await http.post(
-        Uri.parse(_incidentsEndpoint),
-        headers: {
-          'Content-Type': 'application/json',
-          'apikey': _authToken,
-          'Authorization': 'Bearer $_authToken',
-          'Prefer': 'return=minimal'
-        },
-        body: json.encode(incidentData),
-      );
-      
-      if (response.statusCode == 200 || response.statusCode == 201) {
-        return true;
-      } else {
-        // Print error details for debugging
-        print('API Error: ${response.statusCode} - ${response.body}');
-        return false;
-      }
-    } catch (e) {
-      print('Error saving incident: $e');
-      return false;
-    }
+          const SizedBox(height: 20),
+          const Text(
+            'Landmark Reference (Optional)',
+            style: TextStyle(
+              fontSize: 16,
+              fontWeight: FontWeight.w500,
+            ),
+          ),
+          const SizedBox(height: 8),
+          TextFormField(
+            controller: _landmarkController,
+            decoration: InputDecoration(
+              hintText: 'e.g., Near Kabale University',
+              border: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(8),
+              ),
+              contentPadding: const EdgeInsets.all(16),
+            ),
+          ),
+        ],
+      ),
+    );
   }
-    // Build file upload section
+
+  // Build file upload section
   Widget _buildFileUploadSection() {
     return Container(
       width: double.infinity,
@@ -684,9 +932,42 @@ Future<String> _uploadFile(PlatformFile file) async {
     );
   }
 
-  // Submit report method with API integration
-  void _submitReport() async {
+void _submitReport() async {
   if (_formKey.currentState!.validate()) {
+    // Check if location is captured, if not, capture it now
+    if (_currentPosition == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Capturing your location...'), duration: Duration(seconds: 2)),
+      );
+      
+      await _getCurrentLocation();
+      
+      // If still no location, ask the user if they want to continue
+      if (_currentPosition == null) {
+        bool continueWithoutLocation = await showDialog(
+          context: context,
+          builder: (context) => AlertDialog(
+            title: const Text('Location Not Available'),
+            content: const Text('We couldn\'t capture your location. Do you want to continue submitting the report without location data?'),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.of(context).pop(false),
+                child: const Text('Cancel'),
+              ),
+              TextButton(
+                onPressed: () => Navigator.of(context).pop(true),
+                child: const Text('Continue'),
+              ),
+            ],
+          ),
+        ) ?? false;
+        
+        if (!continueWithoutLocation) {
+          return;
+        }
+      }
+    }
+    
     // Show loading indicator
     setState(() {
       _isUploading = true;
@@ -719,42 +1000,88 @@ Future<String> _uploadFile(PlatformFile file) async {
         }
       }
         
-        // 2. Create incident data object
-        final String region = _selectedRegion == 'Other' ? _otherRegionController.text : (_selectedRegion ?? '');
-      final String district = _selectedDistrict == 'Other' ? _otherDistrictController.text : (_selectedDistrict ?? '');
-      final String village = _selectedVillage == 'Other' ? _otherVillageController.text : (_selectedVillage ?? '');
-      
+      // 2. Create incident data object
       final user = Supabase.instance.client.auth.currentUser; // Get current user
-    String? userId = user?.id;
+      String? userId = user?.id;
 
-    if (userId == null) {
-      ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('User not logged in'), backgroundColor: Colors.red)
-      );
-      return;
-    }
+      if (userId == null) {
+        ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('User not logged in'), backgroundColor: Colors.red)
+        );
+        return;
+      }
       
+      // Fix for the non-final field promotion error in incident_report_form.dart
+      // If we have a district but not a correctly mapped region, use our mapper
+      String? districtName = _detectedDistrict;
+      if (districtName != null && 
+          districtName != 'Unknown District' &&
+          (_detectedRegion == null || 
+          _detectedRegion == 'Unknown Region')) {
+        
+        // Try to get the correct region from our mapper
+        String mappedRegion = UgandaRegionsMapper.getRegionForDistrict(districtName);
+        if (mappedRegion != 'Unknown Region') {
+          _detectedRegion = mappedRegion;
+        }
+      }
+
+      // Also update the Kabale special case:
+      if (districtName == 'Kabale' || 
+          _detectedVillage == 'Ndorwa' || 
+          _detectedVillage == 'Hamurwa') {
+        _detectedRegion = 'Western Region';
+      }
+
+      // Map village to district if district is unknown
+      String? villageName = _detectedVillage;
+      if ((districtName == null || districtName == 'Unknown District') && 
+          villageName != null && villageName != 'Unknown Village') {
+        String mappedDistrict = UgandaRegionsMapper.getDistrictForVillage(villageName);
+        if (mappedDistrict != 'Unknown District') {
+          _detectedDistrict = mappedDistrict;
+          
+          // Now that we have a district, also ensure we have the right region
+          String mappedRegion = UgandaRegionsMapper.getRegionForDistrict(mappedDistrict);
+          if (mappedRegion != 'Unknown Region') {
+            _detectedRegion = mappedRegion;
+          }
+        }
+      }
+      
+      // Create incident data object that matches the database schema
+      // Make sure all required fields have default values if they're null
       Map<String, dynamic> incidentData = {
-        'user_id': userId, // Replace with actual user ID from your auth system
+        'user_id': userId,
         'title': '${_selectedIncidentType ?? "Incident"} Report',
         'description': _descriptionController.text,
         'incident_type': _selectedIncidentType,
-        'region': region,
-        'district': district,
-        'village': village,
-        'landmark': _landmarkController.text,
+        
+        // Location data with proper region mapping
+        'region': _detectedRegion ?? "Unknown Region",
+        'district': _detectedDistrict ?? "Unknown District",
+        'village': _detectedVillage ?? "Unknown Village",
+        'latitude': _latitude,
+        'longitude': _longitude,
+        
+        // System fields
+        'status': 'submitted',
+        'is_anonymous': false, // Default value based on schema
+        'created_at': DateTime.now().toIso8601String(),
+        'updated_at': DateTime.now().toIso8601String(),
+        
+        // Additional fields
         'additional_location': _additionalLocationController.text,
+        'additional_notes': _additionalNotesController.text,
+        'landmark': _landmarkController.text,
+        'file_urls': fileUrls,
         'incident_date': _selectedDate != null ? _selectedDate!.toIso8601String() : null,
         'incident_time': _selectedTime != null ? '${_selectedTime!.hour.toString().padLeft(2, '0')}:${_selectedTime!.minute.toString().padLeft(2, '0')}' : null,
         'witness_info': _witnessInfoController.text,
-        'additional_notes': _additionalNotesController.text,
-        'file_urls': fileUrls,
-        'created_at': DateTime.now().toIso8601String(),
-        'status': 'submitted', // Adding a status field for better tracking
       };
-        
-        // 3. Submit the incident data to the API
-        print('Sending incident data: ${json.encode(incidentData)}');
+      
+      // Print incident data for debugging
+      print('Sending incident data with location: ${json.encode(incidentData)}');
       
       // 3. Submit the incident data to the API
       ScaffoldMessenger.of(context).showSnackBar(
@@ -787,8 +1114,26 @@ Future<String> _uploadFile(PlatformFile file) async {
             duration: Duration(seconds: 3),
           ),
         );
-        // Navigate back after successful submission
-        Navigator.pop(context);
+        
+        // Add a slight delay to ensure the snackbar is visible
+        await Future.delayed(const Duration(milliseconds: 500));
+        
+        // Navigate to user dashboard
+        Navigator.of(context).pushNamedAndRemoveUntil(
+          '/user-dashboard', // Use the correct route path
+          (route) => false,
+        );
+        
+        // Show persistent success message on dashboard
+        Future.delayed(const Duration(milliseconds: 300), () {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('Your safety report has been submitted successfully. Thank you for contributing to community safety.'),
+              backgroundColor: Colors.green,
+              duration: Duration(seconds: 5),
+            ),
+          );
+        });
       } else {
         throw Exception('Failed to save incident to database. Status: ${response.statusCode}, Response: ${response.body}');
       }
@@ -812,815 +1157,558 @@ Future<String> _uploadFile(PlatformFile file) async {
     }
   }
 }
-
-  @override
-  Widget build(BuildContext context) {
-    final screenSize = MediaQuery.of(context).size;
-    
-    return Scaffold(
-      backgroundColor: Colors.grey[100],
-      appBar: AppBar(
-        title: const Text(
-          'Submit Safety Report',
-          style: TextStyle(
-            color: Colors.white,
-            fontWeight: FontWeight.bold,
-          ),
-        ),
-        backgroundColor: const Color(0xFF003366),
-        elevation: 0,
-        leading: IconButton(
-          icon: const Icon(Icons.arrow_back),
-          onPressed: () {
-            if (_currentStep > 0) {
-              _previousStep();
-            } else {
-              Navigator.of(context).pop();
-            }
-          },
-        ),
-        bottom: PreferredSize(
-          preferredSize: const Size.fromHeight(60),
-          child: _buildStepIndicator(),
+@override
+Widget build(BuildContext context) {
+  final screenSize = MediaQuery.of(context).size;
+  
+  return Scaffold(
+    backgroundColor: Colors.grey[100],
+    appBar: AppBar(
+      title: const Text(
+        'Submit Safety Report',
+        style: TextStyle(
+          color: Colors.white,
+          fontWeight: FontWeight.bold,
         ),
       ),
-      body: SafeArea(
-        child: SingleChildScrollView(
-          child: Padding(
-            padding: const EdgeInsets.all(16.0),
-            child: Form(
-              key: _formKey,
-              child: Card(
-                elevation: 2,
-                shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(16),
-                ),
-                child: Padding(
-                  padding: const EdgeInsets.all(20.0),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      if (_currentStep == 0) ...[
-                        // Incident Details Step
-                        const Text(
-                          'Incident Type',
-                          style: TextStyle(
-                            fontSize: 16,
-                            fontWeight: FontWeight.w500,
-                          ),
+      backgroundColor: const Color(0xFF003366),
+      elevation: 0,
+      leading: IconButton(
+        icon: const Icon(Icons.arrow_back),
+        onPressed: () {
+          if (_currentStep > 0) {
+            _previousStep();
+          } else {
+            Navigator.of(context).pop();
+          }
+        },
+      ),
+      bottom: PreferredSize(
+        preferredSize: const Size.fromHeight(60),
+        child: _buildStepIndicator(),
+      ),
+    ),
+    body: SafeArea(
+      child: SingleChildScrollView(
+        child: Padding(
+          padding: const EdgeInsets.all(16.0),
+          child: Form(
+            key: _formKey,
+            child: Card(
+              elevation: 2,
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(16),
+              ),
+              child: Padding(
+                padding: const EdgeInsets.all(20.0),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    if (_currentStep == 0) ...[
+                      // Incident Details Step
+                      const Text(
+                        'Incident Type',
+                        style: TextStyle(
+                          fontSize: 16,
+                          fontWeight: FontWeight.w500,
                         ),
-                        const SizedBox(height: 8),
-                        Container(
-                          decoration: BoxDecoration(
-                            border: Border.all(color: Colors.grey.shade300),
-                            borderRadius: BorderRadius.circular(8),
-                          ),
-                          child: DropdownButtonHideUnderline(
-                            child: DropdownButtonFormField<String>(
-                              decoration: const InputDecoration(
-                                contentPadding: EdgeInsets.symmetric(horizontal: 16),
-                                border: InputBorder.none,
-                              ),
-                              hint: const Text('Select incident type'),
-                              value: _selectedIncidentType,
-                              onChanged: (value) {
-                                setState(() {
-                                  _selectedIncidentType = value;
-                                });
-                              },
-                              validator: (value) {
-                                if (value == null || value.isEmpty) {
-                                  return 'Please select an incident type';
-                                }
-                                return null;
-                              },
-                              items: [
-                                'Robbery',
-                                'Theft',
-                                'Rape',
-                                'Defilement',
-                                'Sexual Assault',
-                                'Demestic Violence',
-                                'Murder',
-                                'Manslaughter',
-                                'Drug Abuse',
-                                'Kidnap',
-                                'Child Labour',
-                                'Cyber Crime',
-                                'Fraud and financial crimes',
-                                'Accident',
-                                'Fire outbreak',
-                                'Other'
-                              ].map<DropdownMenuItem<String>>((String value) {
-                                return DropdownMenuItem<String>(
-                                  value: value,
-                                  child: Text(value),
-                                );
-                              }).toList(),
+                      ),
+                      const SizedBox(height: 8),
+                      Container(
+                        decoration: BoxDecoration(
+                          border: Border.all(color: Colors.grey.shade300),
+                          borderRadius: BorderRadius.circular(8),
+                        ),
+                        child: DropdownButtonHideUnderline(
+                          child: DropdownButtonFormField<String>(
+                            decoration: const InputDecoration(
+                              contentPadding: EdgeInsets.symmetric(horizontal: 16),
+                              border: InputBorder.none,
                             ),
+                            hint: const Text('Select incident type'),
+                            value: _selectedIncidentType,
+                            onChanged: (value) {
+                              setState(() {
+                                _selectedIncidentType = value;
+                              });
+                            },
+                            validator: (value) {
+                              if (value == null || value.isEmpty) {
+                                return 'Please select an incident type';
+                              }
+                              return null;
+                            },
+                            items: [
+                              'Robbery',
+                              'Theft',
+                              'Rape',
+                              'Defilement',
+                              'Sexual Assault',
+                              'Demestic Violence',
+                              'Murder',
+                              'Manslaughter',
+                              'Drug Abuse',
+                              'Kidnap',
+                              'Child Labour',
+                              'Cyber Crime',
+                              'Fraud and financial crimes',
+                              'Accident',
+                              'Fire outbreak',
+                              'Other'
+                            ].map<DropdownMenuItem<String>>((String value) {
+                              return DropdownMenuItem<String>(
+                                value: value,
+                                child: Text(value),
+                              );
+                            }).toList(),
                           ),
                         ),
-                        
-                        const SizedBox(height: 20),
-                        const Text(
-                          'Description',
-                          style: TextStyle(
-                            fontSize: 16,
-                            fontWeight: FontWeight.w500,
-                          ),
-                        ),
-                        const SizedBox(height: 8),
-                        TextFormField(
-                          controller: _descriptionController,
-                          decoration: InputDecoration(
-                            hintText: 'Provide detailed description of the incident',
-                            border: OutlineInputBorder(
-                              borderRadius: BorderRadius.circular(8),
-                            ),
-                            contentPadding: const EdgeInsets.all(16),
-                          ),
-                          maxLines: 4,
-                          validator: (value) {
-                            if (value == null || value.isEmpty) {
-                              return 'Please enter a description';
-                            }
-                            return null;
-                          },
-                        ),
-                        
-                        const SizedBox(height: 20),
-                        Row(
-                          children: [
-                            Expanded(
-                              child: Column(
-                                crossAxisAlignment: CrossAxisAlignment.start,
-                                children: [
-                                  const Text(
-                                    'Date',
-                                    style: TextStyle(
-                                      fontSize: 16,
-                                      fontWeight: FontWeight.w500,
-                                    ),
-                                  ),
-                                  const SizedBox(height: 8),
-                                  InkWell(
-                                    onTap: () => _selectDate(context),
-                                    child: Container(
-                                      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
-                                      decoration: BoxDecoration(
-                                        border: Border.all(color: Colors.grey.shade300),
-                                        borderRadius: BorderRadius.circular(8),
-                                      ),
-                                      child: Row(
-                                        children: [
-                                          const Icon(Icons.calendar_today, size: 18),
-                                          const SizedBox(width: 8),
-                                          Text(
-                                            _selectedDate == null 
-                                                ? 'Select date' 
-                                                : '${_selectedDate!.day}/${_selectedDate!.month}/${_selectedDate!.year}',
-                                            style: TextStyle(
-                                              color: _selectedDate == null ? Colors.grey.shade600 : Colors.black,
-                                            ),
-                                          ),
-                                        ],
-                                      ),
-                                    ),
-                                  ),
-                                ],
-                              ),
-                            ),
-                            const SizedBox(width: 16),
-                            Expanded(
-                              child: Column(
-                                crossAxisAlignment: CrossAxisAlignment.start,
-                                children: [
-                                  const Text(
-                                    'Time',
-                                    style: TextStyle(
-                                      fontSize: 16,
-                                      fontWeight: FontWeight.w500,
-                                    ),
-                                  ),
-                                  const SizedBox(height: 8),
-                                  InkWell(
-                                    onTap: () => _selectTime(context),
-                                    child: Container(
-                                      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
-                                      decoration: BoxDecoration(
-                                        border: Border.all(color: Colors.grey.shade300),
-                                        borderRadius: BorderRadius.circular(8),
-                                      ),
-                                      child: Row(
-                                        children: [
-                                          const Icon(Icons.access_time, size: 18),
-                                          const SizedBox(width: 8),
-                                          Text(
-                                            _selectedTime == null 
-                                                ? 'Select time' 
-                                                : _selectedTime!.format(context),
-                                            style: TextStyle(
-                                              color: _selectedTime == null ? Colors.grey.shade600 : Colors.black,
-                                            ),
-                                          ),
-                                        ],
-                                      ),
-                                    ),
-                                  ),
-                                ],
-                              ),
-                            ),
-                          ],
-                        ),
-                      ],
+                      ),
                       
-                      if (_currentStep == 1) ...[
-                        // Region Dropdown
-                        const Text(
-                          'Region*',
-                          style: TextStyle(
-                            fontSize: 16,
-                            fontWeight: FontWeight.w500,
-                          ),
-                          textAlign: TextAlign.center,
+                      const SizedBox(height: 20),
+                      const Text(
+                        'Description',
+                        style: TextStyle(
+                          fontSize: 16,
+                          fontWeight: FontWeight.w500,
                         ),
-                        const SizedBox(height: 8),
-                        Container(
-                          decoration: BoxDecoration(
-                            border: Border.all(color: Colors.orange.shade300),
+                      ),
+                      const SizedBox(height: 8),
+                      TextFormField(
+                        controller: _descriptionController,
+                        decoration: InputDecoration(
+                          hintText: 'Provide detailed description of the incident',
+                          border: OutlineInputBorder(
                             borderRadius: BorderRadius.circular(8),
                           ),
-                          child: DropdownButtonHideUnderline(
-                            child: DropdownButtonFormField<String>(
-                              decoration: InputDecoration(
-                                contentPadding: const EdgeInsets.symmetric(horizontal: 16),
-                                border: InputBorder.none,
-                                filled: true,
-                                fillColor: Colors.orange.shade50,
-                              ),
-                              hint: const Text('Select region'),
-                              value: _selectedRegion,
-                              onChanged: (value) {
-                                setState(() {
-                                  _selectedRegion = value;
-                                  _selectedDistrict = null;
-                                  _selectedVillage = null;
-                                  _isOtherRegion = value == 'Other';
-                                  
-                                  // Update districts based on selected region
-                                  if (value != null && _regionDistricts.containsKey(value)) {
-                                    _districts = _regionDistricts[value]!;
-                                  } else {
-                                    _districts = [];
-                                  }
-                                  
-                                  _villages = [];
-                                });
-                              },
-                              validator: (value) {
-                                if (value == null || value.isEmpty) {
-                                  return 'Please select a region';
-                                }
-                                return null;
-                              },
-                              items: _ugandanRegions.map<DropdownMenuItem<String>>((String value) {
-                                return DropdownMenuItem<String>(
-                                  value: value,
-                                  child: Text(value),
-                                );
-                              }).toList(),
-                            ),
-                          ),
+                          contentPadding: const EdgeInsets.all(16),
                         ),
-                        
-                        // Other Region Field (conditionally shown)
-                        if (_isOtherRegion) ...[
-                          const SizedBox(height: 12),
-                          TextFormField(
-                            controller: _otherRegionController,
-                            decoration: InputDecoration(
-                              labelText: 'Specify Region*',
-                              hintText: 'Enter region name',
-                              border: OutlineInputBorder(
-                                borderRadius: BorderRadius.circular(8),
-                              ),
-                              contentPadding: const EdgeInsets.all(16),
-                            ),
-                            validator: (value) {
-                              if (_isOtherRegion && (value == null || value.isEmpty)) {
-                                return 'Please specify a region name';
-                              }
-                              return null;
-                            },
-                          ),
-                        ],
-                        
-                        const SizedBox(height: 20),
-                        
-                        // District Dropdown
-                        const Text(
-                          'District*',
-                          style: TextStyle(
-                            fontSize: 16,
-                            fontWeight: FontWeight.w500,
-                          ),
-                          textAlign: TextAlign.center,
-                        ),
-                        const SizedBox(height: 8),
-                        Container(
-                          decoration: BoxDecoration(
-                            border: Border.all(color: Colors.grey.shade300),
-                            borderRadius: BorderRadius.circular(8),
-                            color: Colors.grey.shade100,
-                          ),
-                          child: DropdownButtonHideUnderline(
-                            child: DropdownButtonFormField<String>(
-                              decoration: const InputDecoration(
-                                contentPadding: EdgeInsets.symmetric(horizontal: 16),
-                                border: InputBorder.none,
-                              ),
-                              hint: const Text('Select district'),
-                              value: _selectedDistrict,
-                              onChanged: _districts.isEmpty 
-                                ? null 
-                                : (value) {
-                                    setState(() {
-                                      _selectedDistrict = value;
-                                      _selectedVillage = null;
-                                      _isOtherDistrict = value == 'Other';
-                                      
-                                      // Update villages based on selected district
-                                      if (value != null && _districtVillages.containsKey(value)) {
-                                        _villages = _districtVillages[value]!;
-                                      } else {
-                                        // Use default villages if specific ones aren't available
-                                        _villages = _districtVillages['Default']!;
-                                      }
-                                    });
-                                  },
-                              validator: (value) {
-                                if (_selectedRegion != null && (value == null || value.isEmpty)) {
-                                  return 'Please select a district';
-                                }
-                                return null;
-                              },
-                              items: _districts.map<DropdownMenuItem<String>>((String value) {
-                                return DropdownMenuItem<String>(
-                                  value: value,
-                                  child: Text(value),
-                                );
-                              }).toList(),
-                            ),
-                          ),
-                        ),
-                        
-                        // Other District Field (conditionally shown)
-                        if (_isOtherDistrict) ...[
-                          const SizedBox(height: 12),
-                          TextFormField(
-                            controller: _otherDistrictController,
-                            decoration: InputDecoration(
-                              labelText: 'Specify District*',
-                              hintText: 'Enter district name',
-                              border: OutlineInputBorder(
-                                borderRadius: BorderRadius.circular(8),
-                              ),
-                              contentPadding: const EdgeInsets.all(16),
-                            ),
-                            validator: (value) {
-                              if (_isOtherDistrict && (value == null || value.isEmpty)) {
-                                return 'Please specify a district name';
-                              }
-                              return null;
-                            },
-                          ),
-                        ],
-
-                        const SizedBox(height: 20),
-                        
-                        // Village Dropdown
-                        const Text(
-                          'Village/Area*',
-                          style: TextStyle(
-                            fontSize: 16,
-                            fontWeight: FontWeight.w500,
-                          ),
-                          textAlign: TextAlign.center,
-                        ),
-                        const SizedBox(height: 8),
-                        Container(
-                          decoration: BoxDecoration(
-                            border: Border.all(color: Colors.grey.shade300),
-                            borderRadius: BorderRadius.circular(8),
-                            color: Colors.grey.shade100,
-                          ),
-                          child: DropdownButtonHideUnderline(
-                            child: DropdownButtonFormField<String>(
-                              decoration: const InputDecoration(
-                                contentPadding: EdgeInsets.symmetric(horizontal: 16),
-                                border: InputBorder.none,
-                              ),
-                              hint: const Text('Select village/area'),
-                              value: _selectedVillage,
-                              onChanged: _villages.isEmpty 
-                                ? null 
-                                : (value) {
-                                    setState(() {
-                                      _selectedVillage = value;
-                                      _isOtherVillage = value == 'Other';
-                                    });
-                                  },
-                              validator: (value) {
-                                if (_selectedDistrict != null && (value == null || value.isEmpty)) {
-                                  return 'Please select a village/area';
-                                }
-                                return null;
-                              },
-                              items: _villages.map<DropdownMenuItem<String>>((String value) {
-                                return DropdownMenuItem<String>(
-                                  value: value,
-                                  child: Text(value),
-                                );
-                              }).toList(),
-                            ),
-                          ),
-                        ),
-                        
-                        // Other Village Field (conditionally shown)
-                        if (_isOtherVillage) ...[
-                          const SizedBox(height: 12),
-                          TextFormField(
-                            controller: _otherVillageController,
-                            decoration: InputDecoration(
-                              labelText: 'Specify Village/Area*',
-                              hintText: 'Enter village or area name',
-                              border: OutlineInputBorder(
-                                borderRadius: BorderRadius.circular(8),
-                              ),
-                              contentPadding: const EdgeInsets.all(16),
-                            ),
-                            validator: (value) {
-                              if (_isOtherVillage && (value == null || value.isEmpty)) {
-                                return 'Please specify a village or area name';
-                              }
-                              return null;
-                            },
-                          ),
-                        ],
-
-                        const SizedBox(height: 20),
-                        const Text(
-                          'Additional Location Details',
-                          style: TextStyle(
-                            fontSize: 16,
-                            fontWeight: FontWeight.w500,
-                          ),
-                          textAlign: TextAlign.center,
-                        ),
-                        const SizedBox(height: 8),
-                        TextFormField(
-                          controller: _additionalLocationController,
-                          decoration: InputDecoration(
-                            hintText: 'Provide any additional details about the location',
-                            border: OutlineInputBorder(
-                              borderRadius: BorderRadius.circular(8),
-                            ),
-                            contentPadding: const EdgeInsets.all(16),
-                          ),
-                          maxLines: 3,
-                        ),
-
-                        const SizedBox(height: 20),
-                        const Text(
-                          'Landmark Reference (Optional)',
-                          style: TextStyle(
-                            fontSize: 16,
-                            fontWeight: FontWeight.w500,
-                          ),
-                          textAlign: TextAlign.center,
-                        ),
-                        const SizedBox(height: 8),
-                        TextFormField(
-                          controller: _landmarkController,
-                          decoration: InputDecoration(
-                            hintText: 'e.g., Near Kabale University',
-                            border: OutlineInputBorder(
-                              borderRadius: BorderRadius.circular(8),
-                            ),
-                            contentPadding: const EdgeInsets.all(16),
-                          ),
-                        ),
-                      ],
+                        maxLines: 4,
+                        validator: (value) {
+                          if (value == null || value.isEmpty) {
+                            return 'Please enter a description';
+                          }
+                          return null;
+                        },
+                      ),
                       
-                      if (_currentStep == 2) ...[
-                        // Evidence & Submission Step
-                        Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            _buildFileUploadSection(),
-                            
-                            const SizedBox(height: 20),
-                            
-                            Container(
-                              width: double.infinity,
-                              padding: const EdgeInsets.all(16),
-                              decoration: BoxDecoration(
-                                color: Colors.white,
-                                borderRadius: BorderRadius.circular(8),
-                                border: Border.all(color: Colors.grey.shade200),
-                              ),
-                              child: Column(
-                                crossAxisAlignment: CrossAxisAlignment.start,
-                                children: [
-                                  const Text(
-                                    'Additional Information',
-                                    style: TextStyle(
-                                      fontSize: 18,
-                                      fontWeight: FontWeight.bold,
-                                    ),
-                                  ),
-                                  const SizedBox(height: 16),
-                                  const Text(
-                                    'Witness Information (Optional)',
-                                    style: TextStyle(
-                                      fontSize: 14,
-                                      fontWeight: FontWeight.w500,
-                                    ),
-                                  ),
-                                  const SizedBox(height: 8),
-                                  TextFormField(
-                                    controller: _witnessInfoController,
-                                    decoration: InputDecoration(
-                                      hintText: 'Enter contact details of any witnesses',
-                                      border: OutlineInputBorder(
-                                        borderRadius: BorderRadius.circular(8),
-                                      ),
-                                      contentPadding: const EdgeInsets.all(12),
-                                    ),
-                                  ),
-                                  
-                                  const SizedBox(height: 16),
-                                  const Text(
-                                    'Additional Notes',
-                                    style: TextStyle(
-                                      fontSize: 14,
-                                      fontWeight: FontWeight.w500,
-                                    ),
-                                  ),
-                                  const SizedBox(height: 8),
-                                  TextFormField(
-                                    controller: _additionalNotesController,
-                                    decoration: InputDecoration(
-                                      hintText: 'Any other relevant information about the incident',
-                                      border: OutlineInputBorder(
-                                        borderRadius: BorderRadius.circular(8),
-                                      ),
-                                      contentPadding: const EdgeInsets.all(12),
-                                    ),
-                                    maxLines: 3,
-                                  ),
-                                ],
-                              ),
-                            ),
-                            
-                            const SizedBox(height: 20),
-                            
-                            Container(
-                              width: double.infinity,
-                              padding: const EdgeInsets.all(16),
-                              decoration: BoxDecoration(
-                                color: Colors.white,
-                                borderRadius: BorderRadius.circular(8),
-                                border: Border.all(color: Colors.grey.shade200),
-                              ),
-                              child: Column(
-                                crossAxisAlignment: CrossAxisAlignment.start,
-                                children: [
-                                  const Text(
-                                    'Review Your Report',
-                                    style: TextStyle(
-                                      fontSize: 18,
-                                      fontWeight: FontWeight.bold,
-                                    ),
-                                  ),
-                                  const SizedBox(height: 16),
-                                  Row(
-                                    children: [
-                                      const SizedBox(width: 8),
-                                      Expanded(
-                                        flex: 2,
-                                        child: Text(
-                                          'Incident Type:',
-                                          style: TextStyle(
-                                            fontSize: 14,
-                                            fontWeight: FontWeight.w500,
-                                            color: Colors.grey.shade700,
-                                          ),
-                                        ),
-                                      ),
-                                      Expanded(
-                                        flex: 3,
-                                        child: Text(
-                                          _selectedIncidentType ?? 'Not specified',
-                                          style: const TextStyle(
-                                            fontSize: 14,
-                                          ),
-                                        ),
-                                      ),
-                                    ],
-                                  ),
-                                  const SizedBox(height: 8),
-                                  Row(
-                                    children: [
-                                      const SizedBox(width: 8),
-                                      Expanded(
-                                        flex: 2,
-                                        child: Text(
-                                          'Location:',
-                                          style: TextStyle(
-                                            fontSize: 14,
-                                            fontWeight: FontWeight.w500,
-                                            color: Colors.grey.shade700,
-                                          ),
-                                        ),
-                                      ),
-                                      Expanded(
-                                        flex: 3,
-                                        child: Text(
-                                          _getLocationText(),
-                                          style: const TextStyle(
-                                            fontSize: 14,
-                                          ),
-                                        ),
-                                      ),
-                                    ],
-                                  ),
-                                  const SizedBox(height: 8),
-                                  Row(
-                                    children: [
-                                      const SizedBox(width: 8),
-                                      Expanded(
-                                        flex: 2,
-                                        child: Text(
-                                          'Date & Time:',
-                                          style: TextStyle(
-                                            fontSize: 14,
-                                            fontWeight: FontWeight.w500,
-                                            color: Colors.grey.shade700,
-                                          ),
-                                        ),
-                                      ),
-                                      Expanded(
-                                        flex: 3,
-                                        child: Text(
-                                          _selectedDate != null && _selectedTime != null
-                                              ? '${_selectedDate!.day}/${_selectedDate!.month}/${_selectedDate!.year} ${_selectedTime!.format(context)}'
-                                              : 'Not specified',
-                                          style: const TextStyle(
-                                            fontSize: 14,
-                                          ),
-                                        ),
-                                      ),
-                                    ],
-                                  ),
-                                ],
-                              ),
-                            ),
-                            
-                            const SizedBox(height: 20),
-                            
-                            Row(
+                      const SizedBox(height: 20),
+                      Row(
+                        children: [
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
                               children: [
-                                Expanded(
-                                  child: OutlinedButton(
-                                    onPressed: () {
-                                      // Save as draft functionality
-                                      ScaffoldMessenger.of(context).showSnackBar(
-                                        const SnackBar(content: Text('Report saved as draft')),
-                                      );
-                                    },
-                                    style: OutlinedButton.styleFrom(
-                                      padding: const EdgeInsets.symmetric(vertical: 12),
-                                      side: const BorderSide(color: Colors.grey),
-                                      shape: RoundedRectangleBorder(
-                                        borderRadius: BorderRadius.circular(8),
-                                      ),
+                                const Text(
+                                  'Date',
+                                  style: TextStyle(
+                                    fontSize: 16,
+                                    fontWeight: FontWeight.w500,
+                                  ),
+                                ),
+                                const SizedBox(height: 8),
+                                InkWell(
+                                  onTap: () => _selectDate(context),
+                                  child: Container(
+                                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
+                                    decoration: BoxDecoration(
+                                      border: Border.all(color: Colors.grey.shade300),
+                                      borderRadius: BorderRadius.circular(8),
                                     ),
-                                    child: const Text(
-                                      'Save as Draft',
-                                      style: TextStyle(
-                                        color: Colors.black87,
-                                      ),
+                                    child: Row(
+                                      children: [
+                                        const Icon(Icons.calendar_today, size: 18),
+                                        const SizedBox(width: 8),
+                                        Text(
+                                          _selectedDate == null 
+                                              ? 'Select date' 
+                                              : '${_selectedDate!.day}/${_selectedDate!.month}/${_selectedDate!.year}',
+                                          style: TextStyle(
+                                            color: _selectedDate == null ? Colors.grey.shade600 : Colors.black,
+                                          ),
+                                        ),
+                                      ],
                                     ),
                                   ),
                                 ),
                               ],
                             ),
-                          ],
-                        ),
-                      ],
-                      
-                      const SizedBox(height: 24),
-                      if (_currentStep < 2)
-                        Row(
-                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                          children: [
-                            TextButton(
-                              onPressed: _currentStep == 0 
-                                  ? () => Navigator.of(context).pop() 
-                                  : _previousStep,
-                              style: TextButton.styleFrom(
-                                padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
-                                shape: RoundedRectangleBorder(
-                                  borderRadius: BorderRadius.circular(30),
-                                  side: const BorderSide(color: Color(0xFF003366)),
+                          ),
+                          const SizedBox(width: 16),
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                const Text(
+                                  'Time',
+                                  style: TextStyle(
+                                    fontSize: 16,
+                                    fontWeight: FontWeight.w500,
+                                  ),
                                 ),
-                              ),
-                              child: Text(
-                                _currentStep == 0 ? 'Cancel' : 'Back',
-                                style: const TextStyle(
-                                  color: Color(0xFF003366),
-                                  fontWeight: FontWeight.w600,
+                                const SizedBox(height: 8),
+                                InkWell(
+                                  onTap: () => _selectTime(context),
+                                  child: Container(
+                                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
+                                    decoration: BoxDecoration(
+                                      border: Border.all(color: Colors.grey.shade300),
+                                      borderRadius: BorderRadius.circular(8),
+                                    ),
+                                    child: Row(
+                                      children: [
+                                        const Icon(Icons.access_time, size: 18),
+                                        const SizedBox(width: 8),
+                                        Text(
+                                          _selectedTime == null 
+                                              ? 'Select time' 
+                                              : _selectedTime!.format(context),
+                                          style: TextStyle(
+                                            color: _selectedTime == null ? Colors.grey.shade600 : Colors.black,
+                                          ),
+                                        ),
+                                      ],
+                                    ),
+                                  ),
                                 ),
-                              ),
+                              ],
                             ),
-                            ElevatedButton(
-                              onPressed: () {
-                                // For the purpose of this demo, we'll just advance without validation
-                                _nextStep();
-                              },
-                              style: ElevatedButton.styleFrom(
-                                backgroundColor: const Color(0xFF003366),
-                                padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
-                                shape: RoundedRectangleBorder(
-                                  borderRadius: BorderRadius.circular(30),
-                                ),
-                              ),
-                              child: const Text(
-                                'Next',
-                                style: TextStyle(
-                                  fontWeight: FontWeight.w600,
-                                ),
-                              ),
-                            ),
-                          ],
-                        ),
-                      
-                      if (_currentStep == 2)
-                        Column(
-                          children: [
-                            ElevatedButton(
-                              onPressed: _isUploading ? null : _submitReport,
-                              style: ElevatedButton.styleFrom(
-                                backgroundColor: const Color(0xFF003366),
-                                padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 14),
-                                minimumSize: const Size(double.infinity, 50),
-                                shape: RoundedRectangleBorder(
-                                  borderRadius: BorderRadius.circular(8),
-                                ),
-                              ),
-                              child: const Text(
-                                'Submit Report',
-                                style: TextStyle(
-                                  fontWeight: FontWeight.w600,
-                                  fontSize: 16,
-                                ),
-                              ),
-                            ),
-                            const SizedBox(height: 12),
-                            TextButton(
-                              onPressed: _previousStep,
-                              child: const Text(
-                                'Back',
-                                style: TextStyle(
-                                  color: Colors.grey,
-                                  fontWeight: FontWeight.w500,
-                                ),
-                              ),
-                            ),
-                          ],
-                        ),
+                          ),
+                        ],
+                      ),
                     ],
-                  ),
+                    
+                    if (_currentStep == 1) ...[
+                      // GPS-Based Location Section
+                      _buildLocationSection(),
+                    ],
+                    
+                    if (_currentStep == 2) ...[
+                      // Evidence & Submission Step
+                      Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          _buildFileUploadSection(),
+                          
+                          const SizedBox(height: 20),
+                          
+                          Container(
+                            width: double.infinity,
+                            padding: const EdgeInsets.all(16),
+                            decoration: BoxDecoration(
+                              color: Colors.white,
+                              borderRadius: BorderRadius.circular(8),
+                              border: Border.all(color: Colors.grey.shade200),
+                            ),
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                const Text(
+                                  'Additional Information',
+                                  style: TextStyle(
+                                    fontSize: 18,
+                                    fontWeight: FontWeight.bold,
+                                  ),
+                                ),
+                                const SizedBox(height: 16),
+                                const Text(
+                                  'Witness Information (Optional)',
+                                  style: TextStyle(
+                                    fontSize: 14,
+                                    fontWeight: FontWeight.w500,
+                                  ),
+                                ),
+                                const SizedBox(height: 8),
+                                TextFormField(
+                                  controller: _witnessInfoController,
+                                  decoration: InputDecoration(
+                                    hintText: 'Enter contact details of any witnesses',
+                                    border: OutlineInputBorder(
+                                      borderRadius: BorderRadius.circular(8),
+                                    ),
+                                    contentPadding: const EdgeInsets.all(12),
+                                  ),
+                                ),
+                                
+                                const SizedBox(height: 16),
+                                const Text(
+                                  'Additional Notes',
+                                  style: TextStyle(
+                                    fontSize: 14,
+                                    fontWeight: FontWeight.w500,
+                                  ),
+                                ),
+                                const SizedBox(height: 8),
+                                TextFormField(
+                                  controller: _additionalNotesController,
+                                  decoration: InputDecoration(
+                                    hintText: 'Any other relevant information about the incident',
+                                    border: OutlineInputBorder(
+                                      borderRadius: BorderRadius.circular(8),
+                                    ),
+                                    contentPadding: const EdgeInsets.all(12),
+                                  ),
+                                  maxLines: 3,
+                                ),
+                              ],
+                            ),
+                          ),
+                          
+                          const SizedBox(height: 20),
+                          
+                          Container(
+                            width: double.infinity,
+                            padding: const EdgeInsets.all(16),
+                            decoration: BoxDecoration(
+                              color: Colors.white,
+                              borderRadius: BorderRadius.circular(8),
+                              border: Border.all(color: Colors.grey.shade200),
+                            ),
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                const Text(
+                                  'Review Your Report',
+                                  style: TextStyle(
+                                    fontSize: 18,
+                                    fontWeight: FontWeight.bold,
+                                  ),
+                                ),
+                                const SizedBox(height: 16),
+                                Row(
+                                  children: [
+                                    const SizedBox(width: 8),
+                                    Expanded(
+                                      flex: 2,
+                                      child: Text(
+                                        'Incident Type:',
+                                        style: TextStyle(
+                                          fontSize: 14,
+                                          fontWeight: FontWeight.w500,
+                                          color: Colors.grey.shade700,
+                                        ),
+                                      ),
+                                    ),
+                                    Expanded(
+                                      flex: 3,
+                                      child: Text(
+                                        _selectedIncidentType ?? 'Not specified',
+                                        style: const TextStyle(
+                                          fontSize: 14,
+                                        ),
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                                const SizedBox(height: 8),
+                                Row(
+                                  children: [
+                                    const SizedBox(width: 8),
+                                    Expanded(
+                                      flex: 2,
+                                      child: Text(
+                                        'Location:',
+                                        style: TextStyle(
+                                          fontSize: 14,
+                                          fontWeight: FontWeight.w500,
+                                          color: Colors.grey.shade700,
+                                        ),
+                                      ),
+                                    ),
+                                    Expanded(
+                                      flex: 3,
+                                      child: Row(
+                                        children: [
+                                          Icon(
+                                            _currentPosition != null ? Icons.check_circle : Icons.info,
+                                            size: 16,
+                                            color: _currentPosition != null ? Colors.green : Colors.orange,
+                                          ),
+                                          const SizedBox(width: 4),
+                                          Expanded(
+                                            child: Text(
+                                              _currentPosition != null 
+                                                  ? _locationAddress 
+                                                  : 'Will be captured at submission',
+                                              style: TextStyle(
+                                                fontSize: 14,
+                                                color: _currentPosition != null ? Colors.black : Colors.orange.shade800,
+                                              ),
+                                            ),
+                                          ),
+                                        ],
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                                const SizedBox(height: 8),
+                                Row(
+                                  children: [
+                                    const SizedBox(width: 8),
+                                    Expanded(
+                                      flex: 2,
+                                      child: Text(
+                                        'Date & Time:',
+                                        style: TextStyle(
+                                          fontSize: 14,
+                                          fontWeight: FontWeight.w500,
+                                          color: Colors.grey.shade700,
+                                        ),
+                                      ),
+                                    ),
+                                    Expanded(
+                                      flex: 3,
+                                      child: Text(
+                                        _selectedDate != null && _selectedTime != null
+                                            ? '${_selectedDate!.day}/${_selectedDate!.month}/${_selectedDate!.year} ${_selectedTime!.format(context)}'
+                                            : 'Not specified',
+                                        style: const TextStyle(
+                                          fontSize: 14,
+                                        ),
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              ],
+                            ),
+                          ),
+                          
+                          const SizedBox(height: 20),
+                          
+                          Row(
+                            children: [
+                              Expanded(
+                                child: OutlinedButton(
+                                  onPressed: () {
+                                    // Save as draft functionality
+                                    ScaffoldMessenger.of(context).showSnackBar(
+                                      const SnackBar(content: Text('Report saved as draft')),
+                                    );
+                                  },
+                                  style: OutlinedButton.styleFrom(
+                                    padding: const EdgeInsets.symmetric(vertical: 12),
+                                    side: const BorderSide(color: Colors.grey),
+                                    shape: RoundedRectangleBorder(
+                                      borderRadius: BorderRadius.circular(8),
+                                    ),
+                                  ),
+                                  child: const Text(
+                                    'Save as Draft',
+                                    style: TextStyle(
+                                      color: Colors.black87,
+                                    ),
+                                  ),
+                                ),
+                              ),
+                            ],
+                          ),
+                        ],
+                      ),
+                    ],
+                    
+                    const SizedBox(height: 24),
+                    if (_currentStep < 2)
+                      Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                        children: [
+                          TextButton(
+                            onPressed: _currentStep == 0 
+                                ? () => Navigator.of(context).pop() 
+                                : _previousStep,
+                            style: TextButton.styleFrom(
+                              padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
+                              shape: RoundedRectangleBorder(
+                                borderRadius: BorderRadius.circular(30),
+                                side: const BorderSide(color: Color(0xFF003366)),
+                              ),
+                            ),
+                            child: Text(
+                              _currentStep == 0 ? 'Cancel' : 'Back',
+                              style: const TextStyle(
+                                color: Color(0xFF003366),
+                                fontWeight: FontWeight.w600,
+                              ),
+                            ),
+                          ),
+                          ElevatedButton(
+                            onPressed: () {
+                              // Validate current step and proceed if valid
+                              _nextStep();
+                            },
+                            style: ElevatedButton.styleFrom(
+                              backgroundColor: const Color(0xFF003366),
+                              padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
+                              shape: RoundedRectangleBorder(
+                                borderRadius: BorderRadius.circular(30),
+                              ),
+                            ),
+                            child: const Text(
+                              'Next',
+                              style: TextStyle(
+                                fontWeight: FontWeight.w600,
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                    
+                    if (_currentStep == 2)
+                      Column(
+                        children: [
+                          ElevatedButton(
+                            onPressed: _isUploading ? null : _submitReport,
+                            style: ElevatedButton.styleFrom(
+                              backgroundColor: const Color(0xFF003366),
+                              padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 14),
+                              minimumSize: const Size(double.infinity, 50),
+                              shape: RoundedRectangleBorder(
+                                borderRadius: BorderRadius.circular(8),
+                              ),
+                            ),
+                            child: const Text(
+                              'Submit Report',
+                              style: TextStyle(
+                                fontWeight: FontWeight.w600,
+                                fontSize: 16,
+                              ),
+                            ),
+                          ),
+                          const SizedBox(height: 12),
+                          TextButton(
+                            onPressed: _previousStep,
+                            child: const Text(
+                              'Back',
+                              style: TextStyle(
+                                color: Colors.grey,
+                                fontWeight: FontWeight.w500,
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                  ],
                 ),
               ),
             ),
           ),
         ),
       ),
-      bottomSheet: Container(
-        padding: const EdgeInsets.symmetric(vertical: 8.0, horizontal: 16.0),
-        color: Colors.white,
-        width: double.infinity,
-        child: const Text(
-          'All information submitted will be handled confidentially in accordance with privacy regulations.',
-          style: TextStyle(
-            fontSize: 12,
-            color: Colors.grey,
-          ),
-          textAlign: TextAlign.center,
+    ),
+    bottomSheet: Container(
+      padding: const EdgeInsets.symmetric(vertical: 8.0, horizontal: 16.0),
+      color: Colors.white,
+      width: double.infinity,
+      child: const Text(
+        'All information submitted will be handled confidentially in accordance with privacy regulations.',
+        style: TextStyle(
+          fontSize: 12,
+          color: Colors.grey,
         ),
+        textAlign: TextAlign.center,
       ),
-    );
-  }
+    ),
+  );
 }
+      }
+    
+    
