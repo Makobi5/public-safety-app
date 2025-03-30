@@ -8,6 +8,12 @@ import 'package:path_provider/path_provider.dart';
 //import 'package:share_plus/share_plus.dart';
 import 'dart:io';
 import '../widgets/status_badge.dart';
+import 'package:cached_network_image/cached_network_image.dart';
+import 'package:video_player/video_player.dart';
+import 'package:chewie/chewie.dart';
+import 'package:audio_waveforms/audio_waveforms.dart';
+import 'package:flick_video_player/flick_video_player.dart';
+import 'package:visibility_detector/visibility_detector.dart';
 
 class CaseDetailScreen extends StatefulWidget {
   final String incidentId;
@@ -26,6 +32,7 @@ class CaseDetailScreen extends StatefulWidget {
   
 }
 
+
 class _CaseDetailScreenState extends State<CaseDetailScreen> {
   bool _isLoading = true;
   bool _isSubmitting = false;
@@ -34,6 +41,15 @@ class _CaseDetailScreenState extends State<CaseDetailScreen> {
   String? _errorMessage;
   String? _successMessage;
   final _noteController = TextEditingController();
+  // Media viewing variables
+  List<Map<String, dynamic>> _caseFiles = [];
+  bool _isLoadingFiles = false;
+  VideoPlayerController? _videoPlayerController;
+  ChewieController? _chewieController;
+  PlayerController? _audioController;
+  bool _isVideoLoading = false;
+  Map<String, FlickManager> _flickManagers = {};
+  bool _videoInitialized = false;
 
   // Status options for dropdown
   final List<String> _statusOptions = [
@@ -75,11 +91,109 @@ class _CaseDetailScreenState extends State<CaseDetailScreen> {
     },
   ];
 
-  @override
-  void initState() {
-    super.initState();
-    _fetchCaseDetails();
-  }
+@override
+void initState() {
+  super.initState();
+  WidgetsBinding.instance.addPostFrameCallback((_) async {
+    try {
+      await _fetchCaseDetails();
+      if (!mounted) return;
+      
+      await _fetchCaseFiles();
+      if (!mounted) return;
+      
+      // Don't auto-initialize video on load anymore
+      // Let it initialize on demand when user taps to view
+      setState(() {
+        _isLoading = false;
+      });
+    } catch (e) {
+      debugPrint('Initialization error: $e');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Error loading case data')),
+        );
+        setState(() {
+          _isLoading = false;
+        });
+      }
+    }
+  });
+}
+
+
+void _showMediaDialog(Map<String, dynamic> file) {
+  showDialog(
+    context: context,
+    builder: (context) => AlertDialog(
+      contentPadding: EdgeInsets.zero,
+      content: Container(
+        width: MediaQuery.of(context).size.width * 0.8,
+        height: 300,
+        child: file['type'] == 'video' 
+          ? Center(
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  Icon(Icons.videocam, size: 50, color: Colors.grey),
+                  SizedBox(height: 16),
+                  Text('Video preview not available'),
+                  SizedBox(height: 8),
+                  Text('Tap to download video', style: TextStyle(fontSize: 12, color: Colors.grey)),
+                ],
+              ),
+            )
+          : _buildMediaContent(file),
+      ),
+      actions: [
+        // Add download button for videos
+        if (file['type'] == 'video')
+          TextButton(
+            onPressed: () {
+              // Implement download functionality here if needed
+              ScaffoldMessenger.of(context).showSnackBar(
+                SnackBar(content: Text('Download functionality not implemented')),
+              );
+            },
+            child: Text('Download'),
+          ),
+        TextButton(
+          onPressed: () {
+            Navigator.pop(context);
+          },
+          child: Text('Close'),
+        ),
+      ],
+    ),
+  );
+}
+
+void _showMediaDialogContent(Map<String, dynamic> file) {
+  showDialog(
+    context: context,
+    builder: (context) => AlertDialog(
+      contentPadding: EdgeInsets.zero,
+      content: Container(
+        width: MediaQuery.of(context).size.width * 0.8,
+        height: file['type'] == 'video' ? 300 : 400,
+        child: file['type'] == 'video' 
+            ? _buildVideoPlayer(file['url'])
+            : _buildMediaContent(file),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () {
+            if (file['type'] == 'video') {
+              _videoPlayerController?.pause();
+            }
+            Navigator.pop(context);
+          },
+          child: const Text('Close'),
+        ),
+      ],
+    ),
+  );
+}
   Widget _buildActivityItem(String action, String details, DateTime timestamp) {
   return Row(
     crossAxisAlignment: CrossAxisAlignment.start,
@@ -265,6 +379,62 @@ Future<void> _fetchCaseDetails() async {
       _isLoading = false;
     });
   }
+}
+Future<void> _fetchCaseFiles() async {
+  if (!mounted) return;
+  
+  setState(() {
+    _isLoadingFiles = true;
+  });
+
+  try {
+    final supabase = Supabase.instance.client;
+    
+    // Get the file URLs from the incident data
+    final fileUrls = _incidentData?['file_urls'] as List<dynamic>? ?? [];
+    
+    // Prepare files list with type information
+    final files = <Map<String, dynamic>>[];
+    
+    for (var url in fileUrls) {
+      if (url is String) {
+        final extension = url.split('.').last.toLowerCase();
+        final type = _getFileTypeFromExtension(extension);
+        files.add({
+          'url': url,
+          'type': type,
+          'name': url.split('/').last,
+        });
+      }
+    }
+    
+    setState(() {
+      _caseFiles = files;
+    });
+  } catch (e) {
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Error loading files: $e')),
+      );
+    }
+  } finally {
+    if (mounted) {
+      setState(() {
+        _isLoadingFiles = false;
+      });
+    }
+  }
+}
+
+String _getFileTypeFromExtension(String extension) {
+  if (['jpg', 'jpeg', 'png', 'gif'].contains(extension)) {
+    return 'image';
+  } else if (['mp4', 'mov', 'avi'].contains(extension)) {
+    return 'video';
+  } else if (['mp3', 'wav', 'm4a'].contains(extension)) {
+    return 'audio';
+  }
+  return 'file';
 }
 String _getFormattedLocation() {
   // Check if we have detailed location information
@@ -496,6 +666,266 @@ String _getLocationSummary() {
       });
     }
   }
+  Widget _buildMediaViewer() {
+  if (_isLoadingFiles) {
+    return const Center(child: CircularProgressIndicator());
+  }
+
+  if (_caseFiles.isEmpty) {
+    return const Center(child: Text('No files attached to this case'));
+  }
+
+  return Column(
+    crossAxisAlignment: CrossAxisAlignment.start,
+    children: [
+      const Text(
+        'Case Evidence',
+        style: TextStyle(
+          fontSize: 18,
+          fontWeight: FontWeight.bold,
+        ),
+      ),
+      const SizedBox(height: 16),
+      GridView.builder(
+        shrinkWrap: true,
+        physics: const NeverScrollableScrollPhysics(),
+        gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+          crossAxisCount: 3,
+          crossAxisSpacing: 8,
+          mainAxisSpacing: 8,
+          childAspectRatio: 1,
+        ),
+        itemCount: _caseFiles.length,
+        itemBuilder: (context, index) {
+          final file = _caseFiles[index];
+          return GestureDetector(
+            onTap: () => _showMediaDialog(file),
+            child: Container(
+              decoration: BoxDecoration(
+                borderRadius: BorderRadius.circular(8),
+                border: Border.all(color: Colors.grey.shade300),
+              ),
+              child: _buildMediaThumbnail(file),
+            ),
+          );
+        },
+      ),
+    ],
+  );
+}
+
+Widget _buildMediaThumbnail(Map<String, dynamic> file) {
+  switch (file['type']) {
+    case 'image':
+      return CachedNetworkImage(
+        imageUrl: file['url'],
+        fit: BoxFit.cover,
+        placeholder: (context, url) => const Center(
+          child: CircularProgressIndicator(),
+        ),
+        errorWidget: (context, url, error) => const Icon(Icons.error),
+      );
+    case 'video':
+      return Stack(
+        fit: StackFit.expand,
+        children: [
+          const Center(child: Icon(Icons.videocam, size: 40)),
+          Positioned(
+            bottom: 4,
+            right: 4,
+            child: Container(
+              padding: const EdgeInsets.all(4),
+              decoration: BoxDecoration(
+                color: Colors.black.withOpacity(0.7),
+                borderRadius: BorderRadius.circular(4),
+              ),
+              child: const Icon(Icons.play_arrow, color: Colors.white, size: 16),
+            ),
+          ),
+        ],
+      );
+    case 'audio':
+      return const Center(child: Icon(Icons.audiotrack, size: 40));
+    default:
+      // This default case ensures we always return a Widget
+      return Center(
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            const Icon(Icons.insert_drive_file, size: 40),
+            Text(
+              file['name']?.split('.')?.last ?? 'file',
+              style: const TextStyle(fontSize: 10),
+            ),
+          ],
+        ),
+      );
+  }
+}
+Widget _buildMediaContent(Map<String, dynamic> file) {
+  switch (file['type']) {
+    case 'image':
+      return InteractiveViewer(
+        child: CachedNetworkImage(
+          imageUrl: file['url'],
+          fit: BoxFit.contain,
+        ),
+      );
+    case 'video':
+      return _buildVideoPlayer(file['url']);
+    case 'audio':
+      return _buildAudioPlayer(file['url']);
+    default:
+      return SizedBox(
+        width: 300,
+        height: 200,
+        child: Center(
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              const Icon(Icons.insert_drive_file, size: 60),
+              const SizedBox(height: 16),
+              Text(
+                file['name'],
+                style: const TextStyle(fontSize: 16),
+              ),
+              const SizedBox(height: 8),
+              ElevatedButton(
+                onPressed: () {
+                  // Implement download functionality
+                },
+                child: const Text('Download File'),
+              ),
+            ],
+          ),
+        ),
+      );
+  }
+}
+
+Widget _buildVideoPlayer(String url) {
+  if (_isVideoLoading) {
+    return Container(
+      height: 250,
+      child: Center(child: CircularProgressIndicator()),
+    );
+  }
+  
+  if (!_videoInitialized) {
+    return Container(
+      height: 250,
+      child: Center(
+        child: ElevatedButton(
+          onPressed: () => _initializeVideoPlayer(url),
+          child: Text('Load Video'),
+        ),
+      ),
+    );
+  }
+  
+  // Use a simple layout
+  return Container(
+    height: 250,
+    child: Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Expanded(
+          child: AspectRatio(
+            aspectRatio: _videoPlayerController!.value.aspectRatio,
+            child: VideoPlayer(_videoPlayerController!),
+          ),
+        ),
+        Row(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            IconButton(
+              icon: Icon(_videoPlayerController!.value.isPlaying ? Icons.pause : Icons.play_arrow),
+              onPressed: () {
+                setState(() {
+                  if (_videoPlayerController!.value.isPlaying) {
+                    _videoPlayerController!.pause();
+                  } else {
+                    _videoPlayerController!.play();
+                  }
+                });
+              },
+            ),
+          ],
+        ),
+      ],
+    ),
+  );
+}
+@override
+void dispose() {
+  // Clean up video/audio controllers
+  _videoPlayerController?.dispose();
+  _chewieController?.dispose();
+  
+  // Dispose all flick managers
+  _flickManagers.forEach((_, manager) => manager.dispose());
+  _flickManagers.clear();
+  
+  // Clean up other controllers
+  _audioController?.dispose();
+  _noteController.dispose();
+  
+  super.dispose();
+}
+
+
+// Placeholder method that doesn't use video_player
+Future<void> _initializeVideoPlayer(String url) async {
+  // Do nothing, just log
+  debugPrint('Video player initialization skipped for URL: $url');
+}
+
+
+Widget _buildAudioPlayer(String url) {
+  return Container(
+    padding: const EdgeInsets.all(16),
+    width: 300,
+    child: Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        AudioFileWaveforms(
+          size: Size(MediaQuery.of(context).size.width * 0.8, 100),
+          playerController: _audioController ??= PlayerController(),
+          playerWaveStyle: const PlayerWaveStyle(
+            fixedWaveColor: Colors.blueGrey,  // Fixed typo in color name
+            liveWaveColor: Colors.blue,
+            waveCap: StrokeCap.round,
+          ),
+          enableSeekGesture: true,  // Fixed typo in parameter name
+        ),
+        const SizedBox(height: 16),
+        Row(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            IconButton(
+              icon: const Icon(Icons.play_arrow),
+              onPressed: () async {
+                await _audioController?.preparePlayer(
+                  path: url,
+                  shouldExtractWaveform: true,
+                );
+                await _audioController?.startPlayer();
+              },
+            ),
+            IconButton(
+              icon: const Icon(Icons.pause),
+              onPressed: () => _audioController?.pausePlayer(),
+            ),
+            IconButton(
+              icon: const Icon(Icons.stop),
+              onPressed: () => _audioController?.stopPlayer(),
+            ),
+          ],
+        ),
+      ],
+    ),
+  );
+}
 
   // Generate and download case report as PDF
  Future<void> _downloadCaseReport() async {
@@ -739,6 +1169,7 @@ Color _getPriorityColor(String? priority, String? incidentType) {
       return Colors.grey;
   }
 }
+
 @override
 Widget build(BuildContext context) {
   return Scaffold(
@@ -761,7 +1192,10 @@ Widget build(BuildContext context) {
       actions: [
         IconButton(
           icon: const Icon(Icons.refresh, color: Colors.white),
-          onPressed: _fetchCaseDetails,
+          onPressed: () {
+            _fetchCaseDetails();
+            _fetchCaseFiles();
+          },
         ),
       ],
     ),
@@ -970,12 +1404,21 @@ Widget build(BuildContext context) {
                                       'Description',
                                       _incidentData!['description'] ??
                                           'No description provided'),
-                                  if (_incidentData!['evidence_urls'] != null)
-                                    _buildInfoRow(
-                                        'Evidence',
-                                        'Available (${(_incidentData!['evidence_urls'] as List).length} items)'),
                                 ],
                               ),
+                            ),
+                          ),
+
+                          // Media files section - NEWLY ADDED
+                          Card(
+                            margin: const EdgeInsets.only(bottom: 16),
+                            elevation: 2,
+                            shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(12),
+                            ),
+                            child: Padding(
+                              padding: const EdgeInsets.all(16),
+                              child: _buildMediaViewer(),
                             ),
                           ),
 
@@ -1006,7 +1449,6 @@ Widget build(BuildContext context) {
                                             borderRadius: BorderRadius.circular(8),
                                         ),
                                       ),
-                                      // Make sure this value actually exists in your items list
                                       value: _statusOptions.contains(_incidentData!['status']) 
                                           ? _incidentData!['status'] 
                                           : _statusOptions.first,
@@ -1047,60 +1489,53 @@ Widget build(BuildContext context) {
                                     ),
                                   ),
                                   const SizedBox(height: 16),
-                                  GridView.builder(
-                                    shrinkWrap: true,
-                                    physics: const NeverScrollableScrollPhysics(),
-                                    gridDelegate:
-                                        const SliverGridDelegateWithFixedCrossAxisCount(
-                                      crossAxisCount: 3,
-                                      childAspectRatio: 1,
-                                      crossAxisSpacing: 10,
-                                      mainAxisSpacing: 10,
-                                    ),
-                                    itemCount: _actionOptions.length,
-                                    itemBuilder: (context, index) {
-                                      final action = _actionOptions[index];
-                                      return InkWell(
-                                        onTap: _isSubmitting
-                                            ? null
-                                            : () => _performAction(action['label']),
-                                        child: Container(
-                                          decoration: BoxDecoration(
-                                            color: action['color']
-                                                .withOpacity(0.1),
-                                            borderRadius:
-                                                BorderRadius.circular(12),
-                                            border: Border.all(
-                                              color: action['color']
-                                                  .withOpacity(0.3),
-                                            ),
-                                          ),
-                                          child: Column(
-                                            mainAxisAlignment:
-                                                MainAxisAlignment.center,
-                                            children: [
-                                              Icon(
-                                                action['icon'],
-                                                color: action['color'],
-                                                size: 32,
-                                              ),
-                                              const SizedBox(height: 8),
-                                              Text(
-                                                action['label'],
-                                                textAlign: TextAlign.center,
-                                                style: TextStyle(
-                                                  color: action['color'],
-                                                  fontWeight: FontWeight.bold,
-                                                  fontSize: 12,
-                                                ),
-                                              ),
-                                            ],
+                             GridView.builder(
+                                  gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+                                    crossAxisCount: 3, // Number of columns
+                                    crossAxisSpacing: 10, // Spacing between columns
+                                    mainAxisSpacing: 10, // Spacing between rows
+                                    childAspectRatio: 1, // Square items (width/height ratio)
+                                  ),
+                                  shrinkWrap: true,
+                                  physics: const NeverScrollableScrollPhysics(),
+                                  itemCount: _actionOptions.length,
+                                  itemBuilder: (context, index) {
+                                    final action = _actionOptions[index];
+                                    return InkWell(
+                                      onTap: _isSubmitting ? null : () => _performAction(action['label']),
+                                      child: Container(
+                                        decoration: BoxDecoration(
+                                          color: action['color'].withOpacity(0.1),
+                                          borderRadius: BorderRadius.circular(12),
+                                          border: Border.all(
+                                            color: action['color'].withOpacity(0.3),
                                           ),
                                         ),
-                                      );
-                                    },
-                                  ),
-                                ],
+                                        child: Column(
+                                          mainAxisAlignment: MainAxisAlignment.center,
+                                          children: [
+                                            Icon(
+                                              action['icon'],
+                                              color: action['color'],
+                                              size: 32,
+                                            ),
+                                            const SizedBox(height: 8),
+                                            Text(
+                                              action['label'],
+                                              textAlign: TextAlign.center,
+                                              style: TextStyle(
+                                                color: action['color'],
+                                                fontWeight: FontWeight.bold,
+                                                fontSize: 12,
+                                              ),
+                                            ),
+                                          ],
+                                        ),
+                                      ),
+                                    );
+                                  },
+                                )
+                                                                ],
                               ),
                             ),
                           ),
