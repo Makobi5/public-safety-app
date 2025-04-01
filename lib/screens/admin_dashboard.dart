@@ -11,6 +11,11 @@ import 'package:path_provider/path_provider.dart';
 import 'dart:io';
 import 'home_page.dart';
 import 'user_management_screen.dart'; 
+import '../service/notification_service.dart';
+import '../models/notification_model.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+import 'dart:convert';
+
 
 class AdminDashboard extends StatefulWidget {
   const AdminDashboard({Key? key}) : super(key: key);
@@ -29,6 +34,8 @@ class _AdminDashboardState extends State<AdminDashboard> {
   final _firstNameController = TextEditingController();
   final _lastNameController = TextEditingController();
   final _searchController = TextEditingController();
+  // Add this field in your _AdminDashboardState class
+final NotificationService _notificationService = NotificationService();
   
   bool _isLoading = false;
   String? _successMessage;
@@ -58,11 +65,12 @@ void initState() {
   super.initState();
   _fetchDashboardData();
   _getCurrentUser();
+   _setupNotificationListener();
+     _loadNotificationsState(); 
   
   // Add this to set up a timer to check for new reports periodically
-  Future.delayed(const Duration(seconds: 1), () {
-    _checkForNewReports();
-  });
+// Initialize notification service - will start listening in initState
+
 }
   // Get current user's name for display
   Future<void> _getCurrentUser() async {
@@ -92,84 +100,7 @@ final response = await supabase
     }
   }
   // Add after _getCurrentUser method
-// Periodically check for new reports
-Future<void> _checkForNewReports() async {
-  try {
-    final supabase = Supabase.instance.client;
-    
-    // If this is the first check, just record the current time
-    if (lastFetchTime == null) {
-      lastFetchTime = DateTime.now();
-      return;
-    }
-    
-    // Format the lastFetchTime as an ISO string for the Supabase query
-    final lastCheckTime = lastFetchTime!.toIso8601String();
-    
-    // Query for reports created after the last check time
-    final newReportsResponse = await supabase
-        .from('incidents')
-        .select()
-        .gt('created_at', lastCheckTime)
-        .order('created_at', ascending: false);
-    
-    if (newReportsResponse != null && newReportsResponse is List && newReportsResponse.isNotEmpty) {
-      final newReportsData = newReportsResponse.cast<Map<String, dynamic>>();
-      
-      // Update lastFetchTime to now
-      lastFetchTime = DateTime.now();
-      
-      // Add new reports to notifications
-      // Add new reports to notifications
-for (var report in newReportsData) {
-  final String reportId = report['id'].toString();
-  
-  // Skip if we've already processed this incident
-  if (processedIncidents.containsKey(reportId) && processedIncidents[reportId] == true) {
-    continue;
-  }
-  
-  final DateTime createdAt = DateTime.parse(report['created_at']);
-  final String formattedTime = '${createdAt.hour.toString().padLeft(2, '0')}:${createdAt.minute.toString().padLeft(2, '0')}';
-  
-  notifications.add({
-    'id': report['id'],
-    'title': 'New ${report['incident_type'] ?? 'Unknown Incident'}',
-    'message': 'New incident reported in ${report['district'] ?? 'Unknown Location'}',
-    'time': formattedTime,
-    'read': false,
-    'priority': _getIncidentPriority(report['incident_type']),
-  });
-  
-  // Mark this incident as processed
-  processedIncidents[reportId] = true;
-}
-      // Add after _checkForNewReports method
 
-      
-      // Update unread count
-      setState(() {
-        unreadNotifications = notifications.where((n) => n['read'] == false).length;
-      });
-      
-      // Refresh the dashboard data to include the new reports
-      _fetchDashboardData();
-    }
-    
-    // Schedule the next check
-    Future.delayed(const Duration(seconds: 30), () {
-      _checkForNewReports();
-    });
-    
-  } catch (e) {
-    print('Error checking for new reports: $e');
-    
-    // Even if there's an error, schedule the next check
-    Future.delayed(const Duration(seconds: 30), () {
-      _checkForNewReports();
-    });
-  }
-}
   // Show notifications dialog
 void _showNotificationsDialog() {
   showDialog(
@@ -216,12 +147,15 @@ void _showNotificationsDialog() {
                     ),
                     subtitle: Text(notification['message']),
                     trailing: Text(notification['time']),
-                    onTap: () {
-                      // Mark notification as read
+                 onTap: () async {
+                      // Mark notification as read locally
                       setState(() {
                         notifications[index]['read'] = true;
                         unreadNotifications = notifications.where((n) => n['read'] == false).length;
                       });
+                      
+                      // Save the updated notification state
+                      await _saveNotificationsState();
                       
                       // Close the dialog
                       Navigator.of(context).pop();
@@ -235,8 +169,18 @@ void _showNotificationsDialog() {
                           ),
                         ),
                       ).then((_) {
-                        // Refresh dashboard data when returning
+                        // Just refresh dashboard data when returning, don't reprocess notifications
                         _fetchDashboardData();
+                        
+                        // Make sure to mark this notification as read again in case of a state reset
+                        setState(() {
+                          final index = notifications.indexWhere((n) => n['id'] == notification['id']);
+                          if (index >= 0) {
+                            notifications[index]['read'] = true;
+                            unreadNotifications = notifications.where((n) => n['read'] == false).length;
+                          }
+                        });
+                        _saveNotificationsState();
                       });
                     },
                   );
@@ -245,14 +189,34 @@ void _showNotificationsDialog() {
       ),
       actions: [
         TextButton(
-          onPressed: () {
-            // Mark all as read
+          onPressed: () async {
+            // Mark all as read locally
             setState(() {
               for (var i = 0; i < notifications.length; i++) {
                 notifications[i]['read'] = true;
               }
               unreadNotifications = 0;
             });
+            
+            // Save the updated notification state
+            await _saveNotificationsState();
+            
+            // Mark all as read in the database
+            try {
+              final supabase = Supabase.instance.client;
+              final user = supabase.auth.currentUser;
+              
+              if (user != null) {
+                // Update all notifications for this user to mark them as read
+                await supabase
+                    .from('notifications')
+                    .update({'is_read': true})
+                    .eq('user_id', user.id);
+              }
+            } catch (e) {
+              print('Error marking all notifications as read: $e');
+            }
+            
             Navigator.of(context).pop();
           },
           child: const Text('Mark All Read'),
@@ -270,8 +234,174 @@ void _showNotificationsDialog() {
     ),
   );
 }
+Future<void> _saveNotificationsState() async {
+  try {
+    final prefs = await SharedPreferences.getInstance();
+    
+    // Convert to a list of maps to ensure jsonEncode works properly
+    final List<Map<String, dynamic>> notificationsToSave = notifications.map((notification) {
+      // Create a new map to avoid modifying the original
+      final map = Map<String, dynamic>.from(notification);
+      
+      // Make sure all values are JSON-serializable
+      // Convert any non-serializable types if needed
+      return map;
+    }).toList();
+    
+    // Save notifications list
+    await prefs.setString('notifications', jsonEncode(notificationsToSave));
+    
+    // Save unread count
+    await prefs.setInt('unread_notifications', unreadNotifications);
+    
+    print('Saved ${notifications.length} notifications to storage');
+  } catch (e) {
+    print('Error saving notifications state: $e');
+  }
+}
+Future<void> _loadNotificationsState() async {
+  try {
+    final prefs = await SharedPreferences.getInstance();
+    final String? storedNotifications = prefs.getString('notifications');
+    
+    if (storedNotifications != null && storedNotifications.isNotEmpty) {
+      try {
+        final List<dynamic> decodedList = jsonDecode(storedNotifications);
+        
+        setState(() {
+          notifications = decodedList.map((item) => Map<String, dynamic>.from(item)).toList();
+          unreadNotifications = prefs.getInt('unread_notifications') ?? 0;
+        });
+        print('Loaded ${notifications.length} notifications from storage');
+      } catch (decodeError) {
+        print('Error decoding stored notifications: $decodeError');
+        // Reset if there's a decode error
+        setState(() {
+          notifications = [];
+          unreadNotifications = 0;
+        });
+      }
+    }
+  } catch (e) {
+    print('Error loading notifications state: $e');
+  }
+}
+
+void _setupNotificationListener() {
+  // Start monitoring for new incidents
+  _notificationService.startIncidentMonitoring(
+    interval: const Duration(seconds: 15), // Check every 15 seconds
+    onNewIncidents: (newIncidents) {
+      if (newIncidents.isNotEmpty) {
+        _processNewIncidents(newIncidents);
+      }
+    },
+  );
+}
+void _processNewIncidents(List<Map<String, dynamic>> newIncidents) {
+  if (newIncidents.isEmpty) return;
+  
+  List<Map<String, dynamic>> actuallyNewNotifications = [];
+  bool needToSaveState = false;
+  
+  for (var incident in newIncidents) {
+    final String reportId = incident['id'].toString();
+    
+    // Check if this notification already exists in our list
+    bool alreadyExists = notifications.any((n) => n['id'] == reportId);
+    if (alreadyExists) {
+      // Skip this one as we've already processed it
+      continue;
+    }
+    
+    final String incidentType = incident['incident_type'] ?? 'Unknown Incident';
+    final String district = incident['district'] ?? 'Unknown Location';
+    final DateTime createdAt = DateTime.parse(incident['created_at']);
+    final String formattedTime = '${createdAt.hour.toString().padLeft(2, '0')}:${createdAt.minute.toString().padLeft(2, '0')}';
+    final String priority = _notificationService.getIncidentPriority(incidentType);
+    
+    // Create notification
+    Map<String, dynamic> newNotification = {
+      'id': reportId,
+      'title': 'New $incidentType',
+      'message': 'New incident reported in $district',
+      'time': formattedTime,
+      'read': false,
+      'priority': priority,
+    };
+    
+    // Add to notifications list
+    notifications.add(newNotification);
+    actuallyNewNotifications.add(newNotification);
+    needToSaveState = true;
+  }
+  
+  // Update state only if we added new notifications
+  if (needToSaveState) {
+    setState(() {
+      unreadNotifications = notifications.where((n) => n['read'] == false).length;
+    });
+    
+    // Save the updated notifications to persistent storage
+    _saveNotificationsState();
+  }
+  
+  // Only show snackbar for new notifications
+  if (actuallyNewNotifications.isNotEmpty) {
+    // Find the highest priority notification to show
+    var highestPriorityNotification = actuallyNewNotifications.firstWhere(
+      (n) => n['priority'] == 'High',
+      orElse: () => actuallyNewNotifications.first
+    );
+    
+    _showNewIncidentSnackbar(
+      highestPriorityNotification['title'].toString().replaceFirst('New ', ''),
+      highestPriorityNotification['message'].toString().replaceFirst('New incident reported in ', ''),
+      highestPriorityNotification['id'].toString()
+    );
+  }
+  
+  // Refresh dashboard data to include new reports
+  _fetchDashboardData();
+}
+void _showNewIncidentSnackbar(String incidentType, String district, String incidentId) {
+  final snackBar = SnackBar(
+    content: Text('🚨 New $incidentType in $district'),
+    backgroundColor: Colors.red,
+    duration: const Duration(seconds: 5),
+    action: SnackBarAction(
+      label: 'VIEW',
+      textColor: Colors.white,
+      onPressed: () {
+        Navigator.push(
+          context,
+          MaterialPageRoute(
+            builder: (context) => CaseDetailScreen(
+              incidentId: incidentId,
+            ),
+          ),
+        ).then((_) {
+          _fetchDashboardData();
+        });
+      },
+    ),
+  );
+  
+  // Ensure the context is valid before showing the snackbar
+  if (mounted) {
+    ScaffoldMessenger.of(context).showSnackBar(snackBar);
+  }
+}
+
+@override
+void dispose() {
+  // Stop the notification monitoring when widget is disposed
+  _notificationService.stopIncidentMonitoring();
+  super.dispose();
+}
+
   // Fetch dashboard data from database
-  Future<void> _fetchDashboardData() async {
+Future<void> _fetchDashboardData() async {
   setState(() {
     _isLoading = true;
   });
@@ -295,7 +425,7 @@ void _showNotificationsDialog() {
       
       // Count critical cases (high priority incidents)
       criticalCases = incidents.where((incident) => 
-        _getIncidentPriority(incident['incident_type']) == 'High' ||
+        _notificationService.getIncidentPriority(incident['incident_type']) == 'High' ||
         incident['incident_type'] == 'Fire outbreak' || 
         incident['incident_type'] == 'Accident'
       ).length;
@@ -319,87 +449,24 @@ void _showNotificationsDialog() {
         emergencyLevel = 'Low';
       }
       
-      // Get recent reports (up to 10)
-      // Get recent reports (up to 10)
-recentReports = incidents.take(10).map((incident) {
-  // Format time
-  final DateTime createdAt = DateTime.parse(incident['created_at']);
-  final String formattedTime = '${createdAt.hour.toString().padLeft(2, '0')}:${createdAt.minute.toString().padLeft(2, '0')}';
-  
-  // Add to processed incidents tracking
-  final String reportId = incident['id'].toString();
-  if (!processedIncidents.containsKey(reportId)) {
-    processedIncidents[reportId] = false;
-  }
-  
-  return {
-    'id': incident['id'],
-    'title': incident['incident_type'] ?? 'Unknown Incident',
-    'district': incident['district'] ?? 'Unknown Location',
-    'time': formattedTime,
-    'priority': _getIncidentPriority(incident['incident_type']),
-    'status': incident['status'] ?? 'Pending',
-  };
-}).toList();
-
-// Initialize filtered reports
-filteredReports = List.from(recentReports);
-
-// Check for any new reports that haven't been added to notifications yet
-if (lastFetchTime != null) {
-  // Find incidents that aren't in our processed list or are marked as not processed
-  for (var incident in incidents) {
-    final String reportId = incident['id'].toString();
-    
-    if (!processedIncidents.containsKey(reportId) || processedIncidents[reportId] == false) {
-      // Add this incident to notifications
-      final DateTime createdAt = DateTime.parse(incident['created_at']);
-      final String formattedTime = '${createdAt.hour.toString().padLeft(2, '0')}:${createdAt.minute.toString().padLeft(2, '0')}';
-      
-      notifications.add({
-        'id': incident['id'],
-        'title': 'New ${incident['incident_type'] ?? 'Unknown Incident'}',
-        'message': 'New incident reported in ${incident['district'] ?? 'Unknown Location'}',
-        'time': formattedTime,
-        'read': false,
-        'priority': _getIncidentPriority(incident['incident_type']),
-      });
-      
-      // Mark as processed
-      processedIncidents[reportId] = true;
-    }
-  }
-  
-  // Update unread notifications count
-  unreadNotifications = notifications.where((n) => n['read'] == false).length;
-}
-      
-      // Add this new code for notifications
-      // If this is the first fetch, initialize lastFetchTime and create sample notifications
-      if (lastFetchTime == null) {
-        lastFetchTime = DateTime.now();
+      // Get recent reports (up to 10) for display in the dashboard
+      recentReports = incidents.take(10).map((incident) {
+        // Format time
+        final DateTime createdAt = DateTime.parse(incident['created_at']);
+        final String formattedTime = '${createdAt.hour.toString().padLeft(2, '0')}:${createdAt.minute.toString().padLeft(2, '0')}';
         
-        // For demo purposes, create some sample notifications
-        // In a real app, these would come from backend events
-        if (incidents.isNotEmpty && notifications.isEmpty) {
-          final sampleIncidents = incidents.take(3).toList();
-          for (var incident in sampleIncidents) {
-            final DateTime createdAt = DateTime.parse(incident['created_at']);
-            final String formattedTime = '${createdAt.hour.toString().padLeft(2, '0')}:${createdAt.minute.toString().padLeft(2, '0')}';
-            
-            notifications.add({
-              'id': incident['id'],
-              'title': 'New ${incident['incident_type'] ?? 'Unknown Incident'}',
-              'message': 'New incident reported in ${incident['district'] ?? 'Unknown Location'}',
-              'time': formattedTime,
-              'read': false,
-              'priority': _getIncidentPriority(incident['incident_type']),
-            });
-          }
-          
-          unreadNotifications = notifications.length;
-        }
-      }
+        return {
+          'id': incident['id'],
+          'title': incident['incident_type'] ?? 'Unknown Incident',
+          'district': incident['district'] ?? 'Unknown Location',
+          'time': formattedTime,
+          'priority': _notificationService.getIncidentPriority(incident['incident_type']),
+          'status': incident['status'] ?? 'Pending',
+        };
+      }).toList();
+      
+      // Initialize filtered reports
+      filteredReports = List.from(recentReports);
     }
     
     // Fetch recent activities
@@ -407,18 +474,22 @@ if (lastFetchTime != null) {
     
   } catch (e) {
     print('Error fetching dashboard data: $e');
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text('Error loading dashboard data: $e'),
-        backgroundColor: Colors.red,
-      ),
-    );
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Error loading dashboard data: $e'),
+          backgroundColor: Colors.red,
+        ),
+      );
+    }
   } finally {
-  setState(() {
-    _isLoading = false;
-    _isRefreshing = false;
-  });
-} 
+    if (mounted) {
+      setState(() {
+        _isLoading = false;
+        _isRefreshing = false;
+      });
+    }
+  }
 }
 
 // Refresh dashboard data with visual feedback
