@@ -15,6 +15,7 @@ import '../service/notification_service.dart';
 import '../models/notification_model.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'dart:convert';
+import 'package:intl/intl.dart';
 
 
 class AdminDashboard extends StatefulWidget {
@@ -50,6 +51,7 @@ Map<String, bool> processedIncidents = {}; // Track processed incidents
   int criticalCases = 0;
   int newReports = 0;
   String emergencyLevel = 'Low';
+  int responseRateValue = 92; // Default fallback value
   // Add right after your existing variables in _AdminDashboardState class
 // Notification related variables
 List<Map<String, dynamic>> notifications = [];
@@ -298,77 +300,225 @@ void _setupNotificationListener() {
     },
   );
 }
-void _processNewIncidents(List<Map<String, dynamic>> newIncidents) {
+// Check if there are pending critical cases that need attention
+bool _hasPendingCriticalCases() {
+  // Check if there are critical cases with 'Pending' status
+  return recentReports.any((report) => 
+    report['priority'] == 'High' && report['status'] == 'Pending');
+}
+
+// Check if there are new reports that haven't been viewed
+bool _hasNewUnreadReports() {
+  // Check for reports that haven't been processed
+  return recentReports.any((report) => 
+    !processedIncidents.containsKey(report['id'].toString()));
+}
+
+// Calculate actual response rate based on pending vs total cases
+String _calculateResponseRate() {
+  // Count total incidents and non-pending incidents
+  final totalIncidents = recentReports.length;
+  if (totalIncidents == 0) return "0%";
+  
+  final respondedIncidents = recentReports.where((report) => 
+    report['status'] != null && report['status'] != 'Pending'
+  ).length;
+  
+  // Calculate the rate
+  int rate = (respondedIncidents / totalIncidents * 100).round();
+  
+  // Hard cap at 99% if there are ANY pending cases to prevent showing 100%
+  if (rate == 100 && recentReports.any((report) => 
+    report['status'] == null || report['status'] == 'Pending')) {
+    rate = 99;
+  }
+  
+  return '$rate%';
+}
+// Add this helper method to your AdminDashboard class
+bool isPending(Map<String, dynamic>? incident) {
+  if (incident == null) return false;
+  
+  // Check for null, empty, or "Pending" status
+  final status = incident['status'];
+  return status == null || status == '' || status == 'Pending';
+}
+
+// Get color for response rate based on value
+Color _getResponseRateColor() {
+  // Parse percentage from the response rate string
+  final rateString = _calculateResponseRate();
+  final rate = int.parse(rateString.replaceAll('%', ''));
+  
+  if (rate >= 90) {
+    return Colors.green;
+  } else if (rate >= 70) {
+    return Colors.orange;
+  } else {
+    return Colors.red;
+  }
+}
+// Enhanced report item with unread indicator
+Widget _buildReportItem(Map<String, dynamic> report) {
+  final bool isUnread = !processedIncidents.containsKey(report['id'].toString());
+  
+  return InkWell(
+    onTap: () {
+      // Navigate to case detail screen
+      Navigator.push(
+        context,
+        MaterialPageRoute(
+          builder: (context) => CaseDetailScreen(
+            incidentId: report['id'],
+          ),
+        ),
+      ).then((_) {
+        // Mark as processed when returning from detail screen
+        if (mounted) {
+          setState(() {
+            processedIncidents[report['id'].toString()] = true;
+          });
+          // Save changes to processed incidents
+          _saveProcessedIncidents();
+          // Refresh dashboard data
+          _fetchDashboardData();
+        }
+      });
+    },
+    child: Container(
+      margin: const EdgeInsets.only(bottom: 12),
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: isUnread ? Colors.blue.shade50 : Colors.grey.shade50,
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: isUnread ? Colors.blue.shade200 : Colors.grey.shade200),
+      ),
+      child: Row(
+        children: [
+          if (isUnread)
+            Container(
+              width: 8,
+              height: 8,
+              margin: const EdgeInsets.only(right: 8),
+              decoration: BoxDecoration(
+                color: Colors.blue,
+                shape: BoxShape.circle,
+              ),
+            ),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  report['title'],
+                  style: TextStyle(
+                    fontWeight: isUnread ? FontWeight.bold : FontWeight.normal,
+                    fontSize: 16,
+                  ),
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  '${report['district']}   ${report['time']}',
+                  style: TextStyle(
+                    color: Colors.grey.shade700,
+                    fontSize: 14,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          Row(
+            children: [
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                decoration: BoxDecoration(
+                  color: _getPriorityColor(report['priority']),
+                  borderRadius: BorderRadius.circular(20),
+                ),
+                child: Text(
+                  '${report['priority']} Priority',
+                  style: TextStyle(
+                    color: _getPriorityTextColor(report['priority']),
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+              ),
+              const SizedBox(width: 8),
+              Icon(
+                Icons.chevron_right,
+                color: Colors.grey.shade400,
+              ),
+            ],
+          ),
+        ],
+      ),
+    ),
+  );
+}
+void _processNewIncidents(List<Map<String, dynamic>> newIncidents) async {
   if (newIncidents.isEmpty) return;
   
-  List<Map<String, dynamic>> actuallyNewNotifications = [];
-  bool needToSaveState = false;
-  
+  bool shouldShowNotification = false;
+  Map<String, dynamic>? highestPriorityIncident;
+
   for (var incident in newIncidents) {
     final String reportId = incident['id'].toString();
+    if (processedIncidents[reportId] == true) continue;
     
-    // Check if this notification already exists in our list
-    bool alreadyExists = notifications.any((n) => n['id'] == reportId);
-    if (alreadyExists) {
-      // Skip this one as we've already processed it
-      continue;
+    processedIncidents[reportId] = true;
+    final String priority = _notificationService.getIncidentPriority(incident['incident_type']);
+    
+    // Track highest priority incident
+    if (highestPriorityIncident == null || 
+        _isHigherPriority(priority, highestPriorityIncident['priority'])) {
+      highestPriorityIncident = {
+        ...incident,
+        'priority': priority,
+        'time': DateFormat('HH:mm').format(DateTime.parse(incident['created_at']))
+      };
     }
     
-    final String incidentType = incident['incident_type'] ?? 'Unknown Incident';
-    final String district = incident['district'] ?? 'Unknown Location';
-    final DateTime createdAt = DateTime.parse(incident['created_at']);
-    final String formattedTime = '${createdAt.hour.toString().padLeft(2, '0')}:${createdAt.minute.toString().padLeft(2, '0')}';
-    final String priority = _notificationService.getIncidentPriority(incidentType);
-    
-    // Create notification
-    Map<String, dynamic> newNotification = {
-      'id': reportId,
-      'title': 'New $incidentType',
-      'message': 'New incident reported in $district',
-      'time': formattedTime,
-      'read': false,
-      'priority': priority,
-    };
-    
-    // Add to notifications list
-    notifications.add(newNotification);
-    actuallyNewNotifications.add(newNotification);
-    needToSaveState = true;
+    shouldShowNotification = true;
+  }
+
+  if (shouldShowNotification && highestPriorityIncident != null) {
+    _showNewIncidentNotification(highestPriorityIncident!);
   }
   
-  // Update state only if we added new notifications
-  if (needToSaveState) {
-    setState(() {
-      unreadNotifications = notifications.where((n) => n['read'] == false).length;
-    });
-    
-    // Save the updated notifications to persistent storage
-    _saveNotificationsState();
-  }
-  
-  // Only show snackbar for new notifications
-  if (actuallyNewNotifications.isNotEmpty) {
-    // Find the highest priority notification to show
-    var highestPriorityNotification = actuallyNewNotifications.firstWhere(
-      (n) => n['priority'] == 'High',
-      orElse: () => actuallyNewNotifications.first
-    );
-    
-    _showNewIncidentSnackbar(
-      highestPriorityNotification['title'].toString().replaceFirst('New ', ''),
-      highestPriorityNotification['message'].toString().replaceFirst('New incident reported in ', ''),
-      highestPriorityNotification['id'].toString()
-    );
-  }
-  
-  // Refresh dashboard data to include new reports
+  await _saveProcessedIncidents();
   _fetchDashboardData();
 }
-void _showNewIncidentSnackbar(String incidentType, String district, String incidentId) {
+
+bool _isHigherPriority(String newPriority, String currentPriority) {
+  const priorityOrder = {'High': 3, 'Medium': 2, 'Low': 1};
+  return priorityOrder[newPriority]! > priorityOrder[currentPriority]!;
+}
+
+Future<void> _saveProcessedIncidents() async {
+  final prefs = await SharedPreferences.getInstance();
+  await prefs.setString('processed_incidents', jsonEncode(processedIncidents));
+}
+void _showNewIncidentNotification(Map<String, dynamic> incident) {
+  final incidentType = incident['incident_type'];
+  final district = incident['district'] ?? 'Unknown District';
+  final priority = incident['priority'];
+  
   final snackBar = SnackBar(
-    content: Text('🚨 New $incidentType in $district'),
-    backgroundColor: Colors.red,
-    duration: const Duration(seconds: 5),
+    content: Row(
+      children: [
+        Icon(Icons.notification_important, color: Colors.white),
+        SizedBox(width: 8),
+        Expanded(
+          child: Text(
+            'New $incidentType in $district',
+            style: TextStyle(fontWeight: FontWeight.bold),
+          ),
+        ),
+      ],
+    ),
+    backgroundColor: priority == 'High' ? Colors.red : 
+                   priority == 'Medium' ? Colors.orange : Colors.green,
+    duration: Duration(seconds: 5),
     action: SnackBarAction(
       label: 'VIEW',
       textColor: Colors.white,
@@ -377,20 +527,28 @@ void _showNewIncidentSnackbar(String incidentType, String district, String incid
           context,
           MaterialPageRoute(
             builder: (context) => CaseDetailScreen(
-              incidentId: incidentId,
+              incidentId: incident['id'].toString(),
             ),
           ),
-        ).then((_) {
-          _fetchDashboardData();
-        });
+        );
       },
     ),
   );
+
+  ScaffoldMessenger.of(context).showSnackBar(snackBar);
   
-  // Ensure the context is valid before showing the snackbar
-  if (mounted) {
-    ScaffoldMessenger.of(context).showSnackBar(snackBar);
-  }
+  // Also add to notifications list
+  setState(() {
+    notifications.insert(0, {
+      'id': incident['id'],
+      'title': 'New $incidentType',
+      'message': 'Reported in $district',
+      'time': incident['time'],
+      'read': false,
+      'priority': priority,
+    });
+    unreadNotifications++;
+  });
 }
 
 @override
@@ -400,37 +558,42 @@ void dispose() {
   super.dispose();
 }
 
-  // Fetch dashboard data from database
+// Update this part in your _fetchDashboardData method
 Future<void> _fetchDashboardData() async {
   setState(() {
     _isLoading = true;
   });
   
+  // Load processed incidents first
+  final prefs = await SharedPreferences.getInstance();
+  final processed = prefs.getString('processed_incidents');
+  if (processed != null) {
+    processedIncidents = Map<String, bool>.from(jsonDecode(processed));
+  }
+
   try {
-    // Get Supabase client
     final supabase = Supabase.instance.client;
     
-    // Fetch all incidents
-    final response = await supabase
-        .from('incidents')
-        .select()
-        .order('created_at', ascending: false);
-    
-    if (response != null && response is List) {
-      // Process data for dashboard metrics
-      final incidents = response.cast<Map<String, dynamic>>();
+    // IMPORTANT FIX: Modify how we fetch incident data
+    final responses = await Future.wait([
+      supabase.from('incidents').select().order('created_at', ascending: false),
+      // This query might be missing some "pending" cases if they have null status
+      supabase.from('incidents').select('id').not('status', 'eq', 'Pending'),
+    ]);
+
+    if (responses[0] != null && responses[0] is List) {
+      final incidents = responses[0].cast<Map<String, dynamic>>();
+      final respondedIncidents = responses[1]?.cast<Map<String, dynamic>>() ?? [];
       
-      // Count total active cases
+      // Process for dashboard metrics
       activeCase = incidents.length;
       
-      // Count critical cases (high priority incidents)
       criticalCases = incidents.where((incident) => 
         _notificationService.getIncidentPriority(incident['incident_type']) == 'High' ||
         incident['incident_type'] == 'Fire outbreak' || 
         incident['incident_type'] == 'Accident'
       ).length;
       
-      // Count new reports today
       final today = DateTime.now();
       final todayString = '${today.year}-${today.month.toString().padLeft(2, '0')}-${today.day.toString().padLeft(2, '0')}';
       
@@ -439,41 +602,53 @@ Future<void> _fetchDashboardData() async {
         return createdAt.startsWith(todayString);
       }).length;
       
-      // Determine emergency level based on critical cases percentage
       final criticalPercentage = activeCase > 0 ? (criticalCases / activeCase) * 100 : 0;
-      if (criticalPercentage >= 20) {
-        emergencyLevel = 'High';
-      } else if (criticalPercentage >= 10) {
-        emergencyLevel = 'Medium';
-      } else {
-        emergencyLevel = 'Low';
-      }
+      emergencyLevel = criticalPercentage >= 20 ? 'High' : 
+                      criticalPercentage >= 10 ? 'Medium' : 'Low';
       
-      // Get recent reports (up to 10) for display in the dashboard
+      // Make sure status is explicitly set for all reports
       recentReports = incidents.take(10).map((incident) {
-        // Format time
         final DateTime createdAt = DateTime.parse(incident['created_at']);
-        final String formattedTime = '${createdAt.hour.toString().padLeft(2, '0')}:${createdAt.minute.toString().padLeft(2, '0')}';
-        
         return {
           'id': incident['id'],
           'title': incident['incident_type'] ?? 'Unknown Incident',
           'district': incident['district'] ?? 'Unknown Location',
-          'time': formattedTime,
+          'time': '${createdAt.hour.toString().padLeft(2, '0')}:${createdAt.minute.toString().padLeft(2, '0')}',
           'priority': _notificationService.getIncidentPriority(incident['incident_type']),
-          'status': incident['status'] ?? 'Pending',
+          'status': incident['status'] ?? 'Pending', // Explicitly set to 'Pending' if null
         };
       }).toList();
       
-      // Initialize filtered reports
+      // Count pending cases directly here to double-check
+      final pendingCases = recentReports.where((report) => 
+        report['status'] == null || report['status'] == '' || report['status'] == 'Pending').length;
+      
+      // Calculate correct response rate
+      int responseRate;
+      if (recentReports.isEmpty) {
+        responseRate = 0;
+      } else {
+        responseRate = ((recentReports.length - pendingCases) / recentReports.length * 100).round();
+        // Hard cap at 99% if pending cases exist
+        if (pendingCases > 0 && responseRate == 100) {
+          responseRate = 99;
+        }
+      }
+      
+      // Debug output
+      debugPrint('RESPONSE RATE CALCULATION:');
+      debugPrint('Total reports: ${recentReports.length}');
+      debugPrint('Pending reports: $pendingCases');
+      debugPrint('Calculated rate: $responseRate%');
+      
       filteredReports = List.from(recentReports);
+      responseRateValue = responseRate; // Store the calculated response rate
     }
     
-    // Fetch recent activities
     await _fetchRecentActivity();
     
   } catch (e) {
-    print('Error fetching dashboard data: $e');
+    debugPrint('Error fetching dashboard data: $e');
     if (mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
@@ -491,22 +666,11 @@ Future<void> _fetchDashboardData() async {
     }
   }
 }
-
-// Refresh dashboard data with visual feedback
 Future<void> _refreshDashboard() async {
   setState(() {
     _isRefreshing = true;
   });
-  
   await _fetchDashboardData();
-  
-  ScaffoldMessenger.of(context).showSnackBar(
-    const SnackBar(
-      content: Text('Dashboard refreshed'),
-      duration: Duration(seconds: 2),
-      behavior: SnackBarBehavior.floating,
-    ),
-  );
 }
   
   // Fetch recent activities for the dashboard
@@ -850,58 +1014,58 @@ Future<void> _refreshDashboard() async {
     }).toList();
   }
 
-  void _showQuickAlertDialog() {
-    showDialog(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: Row(
-          children: [
-            Icon(Icons.warning_amber, color: Colors.red),
-            SizedBox(width: 8),
-            Text('Send Emergency Alert'),
-          ],
-        ),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text('Send an emergency alert to all officers and nearby districts?'),
-            SizedBox(height: 16),
-            TextField(
-              maxLines: 3,
-              decoration: InputDecoration(
-                labelText: 'Alert Message (Optional)',
-                border: OutlineInputBorder(),
-                hintText: 'Enter alert details...',
-              ),
+void _showQuickAlertDialog() {
+  showDialog(
+    context: context,
+    builder: (context) => AlertDialog(
+      title: Row(
+        children: [
+          Icon(Icons.warning_amber, color: Colors.red),
+          SizedBox(width: 8),
+          Text('Send Emergency Alert'),
+        ],
+      ),
+      content: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text('Send an emergency alert to all officers and nearby districts?'),
+          SizedBox(height: 16),
+          TextField(
+            maxLines: 3,
+            decoration: InputDecoration(
+              labelText: 'Alert Message (Optional)',
+              border: OutlineInputBorder(),
+              hintText: 'Enter alert details...',
             ),
-          ],
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(context).pop(),
-            child: Text('Cancel'),
-          ),
-          ElevatedButton.icon(
-            onPressed: () {
-              Navigator.of(context).pop();
-              ScaffoldMessenger.of(context).showSnackBar(
-                SnackBar(
-                  content: Text('Emergency alert sent to all active units!'),
-                  backgroundColor: Colors.red,
-                ),
-              );
-            },
-            style: ElevatedButton.styleFrom(
-              backgroundColor: Colors.red,
-            ),
-            icon: Icon(Icons.send),
-            label: Text('Send Alert'),
           ),
         ],
       ),
-    );
-  }
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: Text('Cancel'),
+        ),
+        ElevatedButton.icon(
+          onPressed: () {
+            Navigator.of(context).pop();
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(
+                content: Text('Emergency alert sent to all active units!'),
+                backgroundColor: Colors.red,
+              ),
+            );
+          },
+          style: ElevatedButton.styleFrom(
+            backgroundColor: Colors.red,
+          ),
+          icon: Icon(Icons.send),
+          label: Text('Send Alert'),
+        ),
+      ],
+    ),
+  );
+}
 
  @override
 Widget build(BuildContext context) {
@@ -1195,299 +1359,480 @@ Widget _buildStatCard(String title, String value, Color valueColor) {
     ),
   );
 }
-Widget _buildReportItem(Map<String, dynamic> report) {
-  return InkWell(
-    onTap: () {
-      // Navigate to case detail screen
-      Navigator.push(
-        context,
-        MaterialPageRoute(
-          builder: (context) => CaseDetailScreen(
-            incidentId: report['id'],
-          ),
-        ),
-      ).then((_) {
-        // Refresh dashboard data when returning from case detail
-        _fetchDashboardData();
-      });
-    },
-    child: Container(
-      margin: const EdgeInsets.only(bottom: 12),
-      padding: const EdgeInsets.all(12),
-      decoration: BoxDecoration(
-        color: Colors.grey.shade50,
-        borderRadius: BorderRadius.circular(8),
-        border: Border.all(color: Colors.grey.shade200),
-      ),
-      child: Row(
-        children: [
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  report['title'],
-                  style: const TextStyle(
-                    fontWeight: FontWeight.bold,
-                    fontSize: 16,
-                  ),
-                ),
-                const SizedBox(height: 4),
-                Text(
-                  '${report['district']}   ${report['time']}',
-                  style: TextStyle(
-                    color: Colors.grey.shade700,
-                    fontSize: 14,
-                  ),
-                ),
-              ],
-            ),
-          ),
-          Row(
-            children: [
-              Container(
-                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-                decoration: BoxDecoration(
-                  color: _getPriorityColor(report['priority']),
-                  borderRadius: BorderRadius.circular(20),
-                ),
-                child: Text(
-                  '${report['priority']} Priority',
-                  style: TextStyle(
-                    color: _getPriorityTextColor(report['priority']),
-                    fontWeight: FontWeight.bold,
-                  ),
-                ),
-              ),
-              const SizedBox(width: 8),
-              Icon(
-                Icons.chevron_right,
-                color: Colors.grey.shade400,
-              ),
-            ],
-          ),
-        ],
-      ),
-    ),
-  );
-}
- Widget _buildDashboard() {
+
+Widget _buildDashboard() {
   return Container(
     color: Colors.grey.shade100,
     child: _isLoading
-    ? const Center(
-        child: CircularProgressIndicator(
-          color: Color(0xFF003366),
-        ),
-      )
-    : RefreshIndicator(
-        onRefresh: _refreshDashboard,
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            // Top header area with emergency level
-            Container(
-              padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 16),
-              color: const Color(0xFF003366),
-              child: Row(
-                children: [
-                  Expanded(
-                    child: Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-                      decoration: BoxDecoration(
-                        color: Colors.black38,
-                        borderRadius: BorderRadius.circular(30),
+        ? const Center(
+            child: CircularProgressIndicator(
+              color: Color(0xFF003366),
+            ),
+          )
+        : RefreshIndicator(
+            onRefresh: _refreshDashboard,
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                // Emergency Level Header
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 16),
+                  color: const Color(0xFF003366),
+                  child: Row(
+                    children: [
+                      Expanded(
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                          decoration: BoxDecoration(
+                            color: emergencyLevel == 'High'
+                                ? Colors.red.shade800
+                                : emergencyLevel == 'Medium'
+                                    ? Colors.orange.shade800
+                                    : Colors.green.shade800,
+                            borderRadius: BorderRadius.circular(30),
+                          ),
+                          child: Row(
+                            children: [
+                              const Icon(Icons.warning_amber, color: Colors.white),
+                              const SizedBox(width: 8),
+                              Text(
+                                'Emergency Level: $emergencyLevel',
+                                style: const TextStyle(
+                                  color: Colors.white,
+                                  fontWeight: FontWeight.w500,
+                                ),
+                              ),
+                              if (_isRefreshing)
+                                Padding(
+                                  padding: const EdgeInsets.only(left: 8),
+                                  child: SizedBox(
+                                    width: 12,
+                                    height: 12,
+                                    child: CircularProgressIndicator(
+                                      strokeWidth: 2,
+                                      valueColor: AlwaysStoppedAnimation<Color>(Colors.white70),
+                                    ),
+                                  ),
+                                ),
+                            ],
+                          ),
+                        ),
                       ),
-                      child: Row(
-                        children: [
-                          const Icon(Icons.warning_amber, color: Colors.red),
-                          const SizedBox(width: 8),
-                          Text(
-                            'Emergency Level: $emergencyLevel',
-                            style: const TextStyle(
-                              color: Colors.white,
+                      const SizedBox(width: 16),
+                      ElevatedButton(
+                        onPressed: _showQuickAlertDialog,
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: Colors.red,
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(30),
+                          ),
+                          padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
+                        ),
+                        child: const Text('Quick Alert'),
+                      ),
+                    ],
+                  ),
+                ),
+
+                // Dashboard Content
+                Expanded(
+                  child: SingleChildScrollView(
+                    physics: const AlwaysScrollableScrollPhysics(),
+                    padding: const EdgeInsets.all(16),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        // Public Safety Control Center Section
+                        const Padding(
+                          padding: EdgeInsets.only(left: 8, bottom: 8),
+                          child: Text(
+                            'Public Safety Control Center',
+                            style: TextStyle(
+                              fontSize: 16,
                               fontWeight: FontWeight.w500,
                             ),
                           ),
-                          if (_isRefreshing)
-                            Padding(
-                              padding: const EdgeInsets.only(left: 8),
-                              child: SizedBox(
-                                width: 12,
-                                height: 12,
-                                child: CircularProgressIndicator(
-                                  strokeWidth: 2,
-                                  valueColor: AlwaysStoppedAnimation<Color>(Colors.white70),
+                        ),
+
+                        Row(
+                          children: [
+                            Expanded(
+                              child: _buildStatCard(
+                                'Active Cases',
+                                activeCase.toString(),
+                                const Color(0xFF003366),
+                              ),
+                            ),
+                            const SizedBox(width: 12),
+                            Expanded(
+                              child: Stack(
+                                children: [
+                                  _buildStatCard(
+                                    'Critical Cases',
+                                    criticalCases.toString(),
+                                    Colors.red,
+                                  ),
+                                  // Notification badge for critical cases
+                                  if (_hasPendingCriticalCases())
+                                    Positioned(
+                                      top: 8,
+                                      right: 8,
+                                      child: Container(
+                                        width: 12,
+                                        height: 12,
+                                        decoration: BoxDecoration(
+                                          color: Colors.red,
+                                          shape: BoxShape.circle,
+                                          border: Border.all(color: Colors.white, width: 2),
+                                        ),
+                                      ),
+                                    ),
+                                ],
+                              ),
+                            ),
+                          ],
+                        ),
+                        
+                        const SizedBox(height: 12),
+                        
+                        Row(
+                          children: [
+                            Expanded(
+                              child: Stack(
+                                children: [
+                                  _buildStatCard(
+                                    'New Reports Today',
+                                    newReports.toString(),
+                                    const Color(0xFF003366),
+                                  ),
+                                  // Notification badge for new reports
+                                  if (_hasNewUnreadReports())
+                                    Positioned(
+                                      top: 8,
+                                      right: 8,
+                                      child: Container(
+                                        width: 12,
+                                        height: 12,
+                                        decoration: BoxDecoration(
+                                          color: Colors.orange,
+                                          shape: BoxShape.circle,
+                                          border: Border.all(color: Colors.white, width: 2),
+                                        ),
+                                      ),
+                                    ),
+                                ],
+                              ),
+                            ),
+                            const SizedBox(width: 12),
+                            
+                            // NUCLEAR OPTION: Completely independent Response Rate card
+                            // This uses direct calculation in the widget tree with no dependencies
+                            Expanded(
+                              child: Container(
+                                padding: const EdgeInsets.all(16),
+                                decoration: BoxDecoration(
+                                  color: Colors.white,
+                                  borderRadius: BorderRadius.circular(12),
+                                  boxShadow: [
+                                    BoxShadow(
+                                      color: Colors.grey.shade300,
+                                      blurRadius: 4,
+                                      offset: const Offset(0, 2),
+                                    ),
+                                  ],
+                                ),
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    const Text(
+                                      'Response Rate',
+                                      style: TextStyle(
+                                        fontSize: 16,
+                                        fontWeight: FontWeight.w500,
+                                      ),
+                                    ),
+                                    const SizedBox(height: 8),
+                                    Builder(builder: (context) {
+                                      // Get data directly from what's displayed in the UI
+                                      int pendingCases = 0;
+                                      int totalCases = 0;
+                                      
+                                      // Count directly from filteredReports
+                                      totalCases = filteredReports.length;
+                                      pendingCases = filteredReports.where((report) => 
+                                        report['status'] == 'Pending').length;
+                                      
+                                      // Add debug print (can remove later)
+                                      debugPrint('RESPONSE RATE: Total=$totalCases, Pending=$pendingCases');
+                                      
+                                      // Prevent division by zero
+                                      if (totalCases == 0) {
+                                        return const Text(
+                                          '0%',
+                                          style: TextStyle(
+                                            fontSize: 36,
+                                            fontWeight: FontWeight.bold,
+                                            color: Colors.grey,
+                                          ),
+                                        );
+                                      }
+                                      
+                                      // Calculate percentage
+                                      int rate = ((totalCases - pendingCases) / totalCases * 100).round();
+                                      
+                                      // Hard cap at 99% if any pending cases
+                                      if (pendingCases > 0 && rate == 100) {
+                                        rate = 99;
+                                      }
+                                      
+                                      // Debug print the final value (can remove later)
+                                      debugPrint('CALCULATED RESPONSE RATE: $rate%');
+                                      
+                                      // Determine color based on rate
+                                      Color color;
+                                      if (rate >= 90) {
+                                        color = Colors.green;
+                                      } else if (rate >= 70) {
+                                        color = Colors.orange;
+                                      } else {
+                                        color = Colors.red;
+                                      }
+                                      
+                                      return Row(
+                                        children: [
+                                          Text(
+                                            '$rate%',
+                                            style: TextStyle(
+                                              fontSize: 36,
+                                              fontWeight: FontWeight.bold,
+                                              color: color,
+                                            ),
+                                          ),
+                                          if (_isRefreshing)
+                                            Padding(
+                                              padding: const EdgeInsets.only(left: 8),
+                                              child: SizedBox(
+                                                width: 16, 
+                                                height: 16, 
+                                                child: CircularProgressIndicator(
+                                                  strokeWidth: 2,
+                                                  valueColor: AlwaysStoppedAnimation<Color>(color.withOpacity(0.5)),
+                                                ),
+                                              ),
+                                            ),
+                                        ],
+                                      );
+                                    }),
+                                  ],
                                 ),
                               ),
                             ),
-                        ],
-                      ),
-                    ),
-                  ),
-                  const SizedBox(width: 16),
-                  ElevatedButton(
-                    onPressed: _showQuickAlertDialog,
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: Colors.red,
-                      shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(30),
-                      ),
-                      padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
-                    ),
-                    child: const Text('Quick Alert'),
-                  ),
-                ],
-              ),
-            ),
-            
-            // Status Cards
-            Expanded(
-              child: SingleChildScrollView(
-                physics: const AlwaysScrollableScrollPhysics(),
-                padding: const EdgeInsets.all(16),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    // Public Safety label
-                    Padding(
-                      padding: const EdgeInsets.only(left: 8, bottom: 8),
-                      child: Text(
-                        'Public Safety Control Center',
-                        style: TextStyle(
-                          color: Colors.grey.shade700,
-                          fontWeight: FontWeight.w500,
+                          ],
                         ),
-                      ),
-                    ),
-                    
-                    // Stats cards in a row for better space usage
-                    Row(
-                      children: [
-                        Expanded(
-                          child: _buildStatCard('Active Cases', activeCase.toString(), Colors.blue.shade800),
-                        ),
-                        const SizedBox(width: 12),
-                        Expanded(
-                          child: _buildStatCard('Critical Cases', criticalCases.toString(), Colors.red),
-                        ),
-                      ],
-                    ),
-                    const SizedBox(height: 12),
-                    
-                    Row(
-                      children: [
-                        Expanded(
-                          child: _buildStatCard('New Reports Today', newReports.toString(), Colors.blue.shade800),
-                        ),
-                        const SizedBox(width: 12),
-                        Expanded(
-                          child: _buildStatCard('Response Rate', '92%', Colors.green),
-                        ),
-                      ],
-                    ),
-                    const SizedBox(height: 20),
-                    
-                    // District Activity Map
-                    Container(
-                      margin: const EdgeInsets.only(bottom: 16),
-                      padding: const EdgeInsets.all(16),
-                      decoration: BoxDecoration(
-                        color: Colors.white,
-                        borderRadius: BorderRadius.circular(12),
-                        boxShadow: [
-                          BoxShadow(
-                            color: Colors.grey.shade300,
-                            blurRadius: 4,
-                            offset: const Offset(0, 2),
-                          ),
-                        ],
-                      ),
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Row(
-                            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                            children: [
-                              const Text(
-                                'District Activity Map',
-                                style: TextStyle(
-                                  fontSize: 18,
-                                  fontWeight: FontWeight.bold,
-                                ),
-                              ),
-                              ElevatedButton.icon(
-                                onPressed: _exportDistrictActivityMap,
-                                style: ElevatedButton.styleFrom(
-                                  backgroundColor: const Color(0xFF003366),
-                                  shape: RoundedRectangleBorder(
-                                    borderRadius: BorderRadius.circular(20),
-                                  ),
-                                ),
-                                icon: const Icon(Icons.download),
-                                label: const Text('Export PDF'),
+                        
+                        const SizedBox(height: 20),
+
+                        // District Activity Map
+                        Container(
+                          margin: const EdgeInsets.only(bottom: 16),
+                          padding: const EdgeInsets.all(16),
+                          decoration: BoxDecoration(
+                            color: Colors.white,
+                            borderRadius: BorderRadius.circular(12),
+                            boxShadow: [
+                              BoxShadow(
+                                color: Colors.grey.shade300,
+                                blurRadius: 4,
+                                offset: const Offset(0, 2),
                               ),
                             ],
                           ),
-                          const SizedBox(height: 12),
-                          // Simple map visualization placeholder
-                          Container(
-                            height: 200,
-                            width: double.infinity,
-                            decoration: BoxDecoration(
-                              color: Colors.grey.shade100,
-                              borderRadius: BorderRadius.circular(8),
-                              border: Border.all(color: Colors.grey.shade300),
-                            ),
-                            child: Center(
-                              child: Column(
-                                mainAxisAlignment: MainAxisAlignment.center,
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Row(
+                                mainAxisAlignment: MainAxisAlignment.spaceBetween,
                                 children: [
-                                  Icon(
-                                    Icons.map,
-                                    size: 48,
-                                    color: Colors.grey.shade400,
-                                  ),
-                                  const SizedBox(height: 8),
-                                  Text(
-                                    'Interactive District Map',
+                                  const Text(
+                                    'District Activity Map',
                                     style: TextStyle(
-                                      color: Colors.grey.shade600,
+                                      fontSize: 18,
+                                      fontWeight: FontWeight.bold,
+                                    ),
+                                  ),
+                                  ElevatedButton.icon(
+                                    onPressed: _exportDistrictActivityMap,
+                                    style: ElevatedButton.styleFrom(
+                                      backgroundColor: const Color(0xFF003366),
+                                      shape: RoundedRectangleBorder(
+                                        borderRadius: BorderRadius.circular(20),
+                                      ),
+                                    ),
+                                    icon: const Icon(Icons.download),
+                                    label: const Text('Export PDF'),
+                                  ),
+                                ],
+                              ),
+                              const SizedBox(height: 12),
+                              Container(
+                                height: 200,
+                                width: double.infinity,
+                                decoration: BoxDecoration(
+                                  color: Colors.grey.shade100,
+                                  borderRadius: BorderRadius.circular(8),
+                                  border: Border.all(color: Colors.grey.shade300),
+                                ),
+                                child: Center(
+                                  child: Column(
+                                    mainAxisAlignment: MainAxisAlignment.center,
+                                    children: [
+                                      Icon(
+                                        Icons.map,
+                                        size: 48,
+                                        color: Colors.grey.shade400,
+                                      ),
+                                      const SizedBox(height: 8),
+                                      Text(
+                                        'Interactive District Map',
+                                        style: TextStyle(
+                                          color: Colors.grey.shade600,
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+
+                        // Recent Reports Section
+                        Container(
+                          width: double.infinity,
+                          padding: const EdgeInsets.all(16),
+                          decoration: BoxDecoration(
+                            color: Colors.white,
+                            borderRadius: BorderRadius.circular(12),
+                            boxShadow: [
+                              BoxShadow(
+                                color: Colors.grey.shade300,
+                                blurRadius: 4,
+                                offset: const Offset(0, 2),
+                              ),
+                            ],
+                          ),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Row(
+                                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                                children: [
+                                  Row(
+                                    children: [
+                                      const Text(
+                                        'Recent Reports',
+                                        style: TextStyle(
+                                          fontSize: 18,
+                                          fontWeight: FontWeight.bold,
+                                        ),
+                                      ),
+                                      if (_isRefreshing)
+                                        Padding(
+                                          padding: const EdgeInsets.only(left: 8),
+                                          child: SizedBox(
+                                            width: 16,
+                                            height: 16,
+                                            child: CircularProgressIndicator(
+                                              strokeWidth: 2,
+                                              valueColor: AlwaysStoppedAnimation<Color>(Colors.blue.shade300),
+                                            ),
+                                          ),
+                                        ),
+                                      // New indicator
+                                      if (_hasNewUnreadReports())
+                                        Padding(
+                                          padding: const EdgeInsets.only(left: 8),
+                                          child: Container(
+                                            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                                            decoration: BoxDecoration(
+                                              color: Colors.orange,
+                                              borderRadius: BorderRadius.circular(12),
+                                            ),
+                                            child: const Text(
+                                              'NEW',
+                                              style: TextStyle(
+                                                color: Colors.white,
+                                                fontSize: 10,
+                                                fontWeight: FontWeight.bold,
+                                              ),
+                                            ),
+                                          ),
+                                        ),
+                                    ],
+                                  ),
+                                  Container(
+                                    width: 200,
+                                    height: 40,
+                                    decoration: BoxDecoration(
+                                      color: Colors.grey.shade100,
+                                      borderRadius: BorderRadius.circular(20),
+                                    ),
+                                    child: TextField(
+                                      controller: _searchController,
+                                      decoration: const InputDecoration(
+                                        hintText: 'Search reports...',
+                                        prefixIcon: Icon(Icons.search),
+                                        border: InputBorder.none,
+                                        contentPadding: EdgeInsets.symmetric(vertical: 10),
+                                      ),
+                                      onChanged: _filterReports,
                                     ),
                                   ),
                                 ],
                               ),
-                            ),
+                              const SizedBox(height: 16),
+                              if (filteredReports.isEmpty)
+                                const Padding(
+                                  padding: EdgeInsets.symmetric(vertical: 20),
+                                  child: Center(
+                                    child: Text(
+                                      'No recent reports',
+                                      style: TextStyle(
+                                        color: Colors.grey,
+                                        fontSize: 16,
+                                      ),
+                                    ),
+                                  ),
+                                )
+                              else
+                                ...filteredReports.map((report) => _buildReportItem(report)).toList(),
+                            ],
                           ),
-                        ],
-                      ),
-                    ),
-                    
-                    // Recent Reports
-                    Container(
-                      width: double.infinity,
-                      padding: const EdgeInsets.all(16),
-                      decoration: BoxDecoration(
-                        color: Colors.white,
-                        borderRadius: BorderRadius.circular(12),
-                        boxShadow: [
-                          BoxShadow(
-                            color: Colors.grey.shade300,
-                            blurRadius: 4,
-                            offset: const Offset(0, 2),
+                        ),
+
+                        // Recent Activities Section
+                        const SizedBox(height: 20),
+                        Container(
+                          width: double.infinity,
+                          padding: const EdgeInsets.all(16),
+                          decoration: BoxDecoration(
+                            color: Colors.white,
+                            borderRadius: BorderRadius.circular(12),
+                            boxShadow: [
+                              BoxShadow(
+                                color: Colors.grey.shade300,
+                                blurRadius: 4,
+                                offset: const Offset(0, 2),
+                              ),
+                            ],
                           ),
-                        ],
-                      ),
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Row(
-                            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
                             children: [
                               Row(
                                 children: [
                                   const Text(
-                                    'Recent Reports',
+                                    'Recent Activities',
                                     style: TextStyle(
                                       fontSize: 18,
                                       fontWeight: FontWeight.bold,
@@ -1507,146 +1852,63 @@ Widget _buildReportItem(Map<String, dynamic> report) {
                                     ),
                                 ],
                               ),
-                              Container(
-                                width: 200,
-                                height: 40,
-                                decoration: BoxDecoration(
-                                  color: Colors.grey.shade100,
-                                  borderRadius: BorderRadius.circular(20),
-                                ),
-                                child: TextField(
-                                  controller: _searchController,
-                                  decoration: const InputDecoration(
-                                    hintText: 'Search reports...',
-                                    prefixIcon: Icon(Icons.search),
-                                    border: InputBorder.none,
-                                    contentPadding: EdgeInsets.symmetric(vertical: 10),
-                                  ),
-                                  onChanged: _filterReports,
-                                ),
-                              ),
-                            ],
-                          ),
-                          const SizedBox(height: 16),
-                          ...(filteredReports.isEmpty
-                              ? [
-                                  const Padding(
-                                    padding: EdgeInsets.symmetric(vertical: 20),
-                                    child: Center(
-                                      child: Text(
-                                        'No recent reports',
-                                        style: TextStyle(
-                                          color: Colors.grey,
-                                          fontSize: 16,
-                                        ),
+                              const SizedBox(height: 16),
+                              if (recentActivities.isEmpty)
+                                Padding(
+                                  padding: const EdgeInsets.symmetric(vertical: 20),
+                                  child: Center(
+                                    child: Text(
+                                      'No recent activities',
+                                      style: TextStyle(
+                                        color: Colors.grey,
+                                        fontSize: 16,
                                       ),
                                     ),
-                                  )
-                                ]
-                              : filteredReports.map((report) => _buildReportItem(report)).toList()),
-                        ],
-                      ),
-                    ),
-                    
-                    // Recent Activity Log
-                    const SizedBox(height: 20),
-                    Container(
-                      width: double.infinity,
-                      padding: const EdgeInsets.all(16),
-                      decoration: BoxDecoration(
-                        color: Colors.white,
-                        borderRadius: BorderRadius.circular(12),
-                        boxShadow: [
-                          BoxShadow(
-                            color: Colors.grey.shade300,
-                            blurRadius: 4,
-                            offset: const Offset(0, 2),
-                          ),
-                        ],
-                      ),
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Row(
-                            children: [
-                              const Text(
-                                'Recent Activities',
-                                style: TextStyle(
-                                  fontSize: 18,
-                                  fontWeight: FontWeight.bold,
-                                ),
-                              ),
-                              if (_isRefreshing)
-                                Padding(
-                                  padding: const EdgeInsets.only(left: 8),
-                                  child: SizedBox(
-                                    width: 16,
-                                    height: 16,
-                                    child: CircularProgressIndicator(
-                                      strokeWidth: 2,
-                                      valueColor: AlwaysStoppedAnimation<Color>(Colors.blue.shade300),
-                                    ),
                                   ),
+                                )
+                              else
+                                ListView.builder(
+                                  shrinkWrap: true,
+                                  physics: const NeverScrollableScrollPhysics(),
+                                  itemCount: recentActivities.length,
+                                  itemBuilder: (context, index) {
+                                    final activity = recentActivities[index];
+                                    final DateTime createdAt = DateTime.parse(activity['created_at']);
+                                    final String formattedTime = '${createdAt.hour.toString().padLeft(2, '0')}:${createdAt.minute.toString().padLeft(2, '0')}';
+                                    
+                                    return ListTile(
+                                      contentPadding: EdgeInsets.zero,
+                                      leading: CircleAvatar(
+                                        backgroundColor: Colors.blue.shade100,
+                                        child: const Icon(Icons.history, color: Color(0xFF003366)),
+                                      ),
+                                      title: Text(
+                                        activity['action'] ?? 'Unknown action',
+                                        style: const TextStyle(fontWeight: FontWeight.bold),
+                                      ),
+                                      subtitle: Text(
+                                        'Case: ${activity['incidents']['incident_type']}',
+                                      ),
+                                      trailing: Text(
+                                        formattedTime,
+                                        style: TextStyle(
+                                          color: Colors.grey.shade600,
+                                          fontSize: 14,
+                                        ),
+                                      ),
+                                    );
+                                  },
                                 ),
                             ],
                           ),
-                          const SizedBox(height: 16),
-                          if (recentActivities.isEmpty)
-                            Padding(
-                              padding: const EdgeInsets.symmetric(vertical: 20),
-                              child: Center(
-                                child: Text(
-                                  'No recent activities',
-                                  style: TextStyle(
-                                    color: Colors.grey,
-                                    fontSize: 16,
-                                  ),
-                                ),
-                              ),
-                            )
-                          else
-                            ListView.builder(
-                              shrinkWrap: true,
-                              physics: const NeverScrollableScrollPhysics(),
-                              itemCount: recentActivities.length,
-                              itemBuilder: (context, index) {
-                                final activity = recentActivities[index];
-                                final DateTime createdAt = DateTime.parse(activity['created_at']);
-                                final String formattedTime = '${createdAt.hour.toString().padLeft(2, '0')}:${createdAt.minute.toString().padLeft(2, '0')}';
-                                
-                                return ListTile(
-                                  contentPadding: EdgeInsets.zero,
-                                  leading: CircleAvatar(
-                                    backgroundColor: Colors.blue.shade100,
-                                    child: const Icon(Icons.history, color: Color(0xFF003366)),
-                                  ),
-                                  title: Text(
-                                    activity['action'] ?? 'Unknown action',
-                                    style: const TextStyle(fontWeight: FontWeight.bold),
-                                  ),
-                                  subtitle: Text(
-                                    'Case: ${activity['incidents']['incident_type']}',
-                                  ),
-                                  trailing: Text(
-                                    formattedTime,
-                                    style: TextStyle(
-                                      color: Colors.grey.shade600,
-                                      fontSize: 14,
-                                    ),
-                                  ),
-                                );
-                              },
-                            ),
-                        ],
-                      ),
+                        ),
+                      ],
                     ),
-                  ],
+                  ),
                 ),
-              ),
+              ],
             ),
-          ],
-        ),
-      ),
+          ),
   );
 }
 Widget _buildAddAdminForm() {

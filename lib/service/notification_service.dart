@@ -5,6 +5,7 @@ import '../models/notification_model.dart';
 import 'dart:async';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'dart:convert';
+import 'package:flutter/foundation.dart'; // Add this import
 
 class NotificationService {
   static final NotificationService _instance = NotificationService._internal();
@@ -132,6 +133,63 @@ Future<void> saveProcessedIncidentsState() async {
       rethrow;
     }
   }
+Future<void> processNewIncident(Map<String, dynamic> incident) async {
+  try {
+    final String incidentId = incident['id'].toString();
+    if (isIncidentProcessed(incidentId)) {
+      debugPrint('Incident $incidentId already processed');
+      return;
+    }
+
+    final String incidentType = incident['incident_type']?.toString() ?? 'Unknown Incident';
+    final String district = incident['district']?.toString() ?? 'Unknown Location';
+    final String priority = getIncidentPriority(incidentType);
+    final String? status = incident['status']?.toString();
+
+    // Validate required fields
+    if (incidentId.isEmpty) {
+      throw Exception('Invalid incident ID');
+    }
+
+    // Get all admin users (with error handling)
+    final adminsResponse = await supabase
+        .from('user_profiles')
+        .select('user_id')
+        .eq('role', 'admin');
+
+    if (adminsResponse == null || adminsResponse.isEmpty) {
+      debugPrint('No admin users found');
+      return;
+    }
+
+    // Create notifications for all admins
+    final notifications = adminsResponse.map<Future>((admin) async {
+      final String userId = admin['user_id'].toString();
+      if (userId.isEmpty) return;
+      
+      await createNotification(
+        userId: userId,
+        title: 'New ${priority == 'High' ? '⚠️ ' : ''}$incidentType',
+        message: 'Reported in $district\nStatus: ${status ?? 'Pending'}',
+        priority: priority,
+        incidentId: incidentId,
+      );
+    }).toList();
+
+    // Process all notifications in parallel
+    await Future.wait(notifications);
+
+    // Mark incident as processed after successful notification
+    markIncidentAsProcessed(incidentId);
+    await saveProcessedIncidentsState();
+
+    debugPrint('Successfully processed incident $incidentId');
+  } catch (e, stackTrace) {
+    debugPrint('Error processing incident: $e');
+    debugPrint('Stack trace: $stackTrace');
+    rethrow;
+  }
+}
 
   // Delete a notification
   Future<void> deleteNotification(String notificationId) async {
@@ -149,47 +207,57 @@ Future<void> saveProcessedIncidentsState() async {
   // Check for new incidents
 Future<List<Map<String, dynamic>>> checkForNewIncidents() async {
   try {
-    if (_lastCheckedTime == null) {
-      _lastCheckedTime = DateTime.now();
-      return [];
-    }
-
+    // Initialize last checked time if not set (check last 5 minutes)
+    _lastCheckedTime ??= DateTime.now().subtract(const Duration(minutes: 5));
+    
     // Query for reports created after the last check time
-    final lastCheckTime = _lastCheckedTime!.toIso8601String();
-    
-    final newReportsResponse = await supabase
+    final response = await supabase
         .from('incidents')
-        .select()
-        .gt('created_at', lastCheckTime)
-        .order('created_at', ascending: false);
-    
-    // Update last checked time
+        .select('''
+          id,
+          incident_type,
+          district,
+          created_at,
+          status,
+          description
+        ''')
+        .gt('created_at', _lastCheckedTime!.toIso8601String())
+        .order('created_at', ascending: false)
+        .limit(50); // Limit to prevent overload
+
+    // Update last checked time immediately after successful query
     _lastCheckedTime = DateTime.now();
     
-    if (newReportsResponse != null && newReportsResponse is List && newReportsResponse.isNotEmpty) {
-      final newReportsData = newReportsResponse.cast<Map<String, dynamic>>();
+    if (response != null && response is List) {
+      final newReports = response.cast<Map<String, dynamic>>();
       
-      // Filter out already processed incidents
-      final newIncidents = newReportsData.where((report) {
-        final String reportId = report['id'].toString();
-        if (_processedIncidents.containsKey(reportId)) {
-          return false; // Skip if already processed
+      // Filter out processed incidents and mark new ones
+      final newIncidents = <Map<String, dynamic>>[];
+      
+      for (final report in newReports) {
+        final reportId = report['id'].toString();
+        if (!_processedIncidents.containsKey(reportId)) {
+          // Add priority classification
+          report['priority'] = getIncidentPriority(report['incident_type']);
+          newIncidents.add(report);
+          _processedIncidents[reportId] = true;
         }
-        
-        // Mark as processed (you had this line duplicated)
-        _processedIncidents[reportId] = true;
-        return true;
-      }).toList();
-      
-      // Save the processed incidents state after updating
-      await saveProcessedIncidentsState();
+      }
+
+      // Save state if we found new incidents
+      if (newIncidents.isNotEmpty) {
+        await saveProcessedIncidentsState();
+      }
       
       return newIncidents;
     }
     
     return [];
   } catch (e) {
-    print('Error checking for new incidents: $e');
+    // Log error but don't crash - we'll try again next check
+    debugPrint('Error checking for new incidents: $e');
+    // Reset last checked time to try again next time
+    _lastCheckedTime = DateTime.now().subtract(const Duration(minutes: 1));
     return [];
   }
 }

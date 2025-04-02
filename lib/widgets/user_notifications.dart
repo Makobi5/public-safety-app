@@ -58,25 +58,41 @@ class _UserNotificationsState extends State<UserNotifications> {
       final supabase = Supabase.instance.client;
       final userId = supabase.auth.currentUser!.id;
 
-_notificationService.startNotificationPolling(
-  userId,
-  (notification) {
-    setState(() {
-      _notifications.insert(0, notification);
-    });
+_notificationService.startIncidentMonitoring(
+  onNewIncidents: (incidents) async {
+    final supabase = Supabase.instance.client;
+    final userId = supabase.auth.currentUser!.id;
     
-    // Show a snackbar for new notification
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text(notification.title),
-        action: SnackBarAction(
-          label: 'View',
-          onPressed: () {
-            _showNotificationDetails(notification);
-          },
+    for (final incident in incidents) {
+      // Create notification model from incident data
+      final notification = NotificationModel(
+        id: DateTime.now().millisecondsSinceEpoch.toString(),
+        userId: userId,
+        title: 'New Incident: ${incident['incident_type'] ?? 'Unknown'}',
+        message: incident['description'] ?? 'No description provided',
+        isRead: false,
+        createdAt: DateTime.now(),
+        priority: _notificationService.getIncidentPriority(incident['incident_type']),
+        incidentId: incident['id'].toString(),
+      );
+      
+      setState(() {
+        _notifications.insert(0, notification);
+      });
+      
+      // Show a snackbar for new notification
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(notification.title),
+          action: SnackBarAction(
+            label: 'View',
+            onPressed: () {
+              _showNotificationDetails(notification);
+            },
+          ),
         ),
-      ),
-    );
+      );
+    }
   },
 );
     } catch (e) {

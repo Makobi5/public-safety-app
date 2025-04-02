@@ -101,7 +101,7 @@ class UgandaRegionsMapper {
     'Hoima': 'Western Region',
     'Ibanda': 'Western Region',
     'Isingiro': 'Western Region',
-    'Kabale': 'Western Region',  // Note: Kabale is in Western Region
+    'Kabale': 'Western Region',
     'Kabarole': 'Western Region',
     'Kamwenge': 'Western Region',
     'Kanungu': 'Western Region',
@@ -120,26 +120,90 @@ class UgandaRegionsMapper {
     'Rubirizi': 'Western Region',
     'Rukungiri': 'Western Region',
     'Sheema': 'Western Region',
-    
-    // Additional newer districts
-    // 'Nabilatuk': 'Northern Region',
-    // 'Bugweri': 'Eastern Region',
-    // 'Kassanda': 'Central Region',
-    // 'Kwania': 'Northern Region',
-    // 'Kapelebyong': 'Eastern Region',
-    // 'Kikuube': 'Western Region',
-    // 'Obongi': 'Northern Region',
-    // 'Kazo': 'Western Region',
-    // 'Rwampara': 'Western Region',
-    // 'Kitagwenda': 'Western Region',
-    // 'Madi-Okollo': 'Northern Region',
-    // 'Karenga': 'Northern Region',
-    // 'Kalaki': 'Eastern Region',
-    // 'Terego': 'Northern Region',
-    // 'Bukimbiri': 'Western Region',
-    // 'Ndorwa': 'Western Region',    // Sub-county in Kabale
-    // 'Hamurwa': 'Western Region',   // Sub-county in Kabale
   };
+
+  // Precise coordinate ranges for key districts
+  static final Map<String, Map<String, List<double>>> districtCoordinates = {
+    'Kabale': {
+      'latitude': [-1.35, -1.0],  // More precise Kabale bounds
+      'longitude': [29.9, 30.3]
+    },
+    'Kampala': {
+      'latitude': [0.25, 0.4],
+      'longitude': [32.5, 32.7]
+    },
+    // Add more districts as needed
+  };
+
+  // Method to get region from coordinates
+  static String getRegionForCoordinates(double latitude, double longitude) {
+    // First check if coordinates are within Uganda
+    if (!_isCoordinateInUganda(latitude, longitude)) {
+      return 'Unknown Region';
+    }
+
+    // Check specific districts first
+    for (var entry in districtCoordinates.entries) {
+      final district = entry.key;
+      final coords = entry.value;
+      if (_isInCoordinateRange(latitude, longitude, coords)) {
+        return districtToRegionMap[district] ?? 'Unknown Region';
+      }
+    }
+
+    // General region detection
+    // Western Region (including Kabale)
+    if (latitude >= -1.5 && latitude <= 0.5 && longitude >= 29.5 && longitude <= 31.5) {
+      return 'Western Region';
+    }
+    // Central Region
+    else if (latitude >= 0.0 && latitude <= 1.5 && longitude >= 31.5 && longitude <= 33.0) {
+      return 'Central Region';
+    }
+    // Eastern Region
+    else if (latitude >= 0.5 && latitude <= 2.5 && longitude >= 33.0 && longitude <= 34.5) {
+      return 'Eastern Region';
+    }
+    // Northern Region
+    else if (latitude >= 2.0 && latitude <= 4.0 && longitude >= 31.5 && longitude <= 35.0) {
+      return 'Northern Region';
+    }
+
+    return 'Unknown Region';
+  }
+
+  // Method to get district from coordinates
+static String getDistrictForCoordinates(double latitude, double longitude) {
+  // Precise Kabale district boundaries
+  if (latitude >= -1.35 && latitude <= -1.0 && 
+      longitude >= 29.9 && longitude <= 30.3) {
+    return 'Kabale';
+  }
+  // Kampala district
+  else if (latitude >= 0.25 && latitude <= 0.4 && 
+           longitude >= 32.5 && longitude <= 32.7) {
+    return 'Kampala';
+  }
+  
+  return 'Unknown District';
+}
+
+  // Helper method to check coordinate ranges
+  static bool _isInCoordinateRange(double lat, double lon, Map<String, List<double>> coords) {
+    return lat >= coords['latitude']![0] && 
+           lat <= coords['latitude']![1] && 
+           lon >= coords['longitude']![0] && 
+           lon <= coords['longitude']![1];
+  }
+
+  // Helper method to check if coordinates are in Uganda
+  static bool _isCoordinateInUganda(double lat, double lon) {
+    const double minLat = -1.5;
+    const double maxLat = 4.3;
+    const double minLon = 29.5;
+    const double maxLon = 35.0;
+    return lat >= minLat && lat <= maxLat && lon >= minLon && lon <= maxLon;
+  }
 
   // Method to get region from district
   static String getRegionForDistrict(String district) {
@@ -147,13 +211,8 @@ class UgandaRegionsMapper {
       return 'Unknown Region';
     }
     
-    // Standardize the district name for lookup
     final standardizedDistrict = district.trim();
-    
-    // Look up the region in our map
     final region = districtToRegionMap[standardizedDistrict];
-    
-    // Return the found region or default to "Unknown Region"
     return region ?? 'Unknown Region';
   }
 
@@ -178,28 +237,23 @@ class UgandaRegionsMapper {
       'Western Region'
     ];
   }
-// Add this to your UgandaRegionsMapper class
-static final Map<String, String> villageToDistrictMap = {
-  'Ndorwa': 'Kabale',
-  'Hamurwa': 'Kabale',
-  'Kabale Town': 'Kabale',
-  // Add other village-to-district mappings as needed
-};
 
-// Method to get district from village
-static String getDistrictForVillage(String village) {
-  if (village == null || village.isEmpty) {
-    return 'Unknown District';
+  // Village to district mapping
+  static final Map<String, String> villageToDistrictMap = {
+    'Ndorwa': 'Kabale',
+    'Hamurwa': 'Kabale',
+    'Kabale Town': 'Kabale',
+    // Add other village-to-district mappings as needed
+  };
+
+  // Method to get district from village
+  static String getDistrictForVillage(String village) {
+    if (village == null || village.isEmpty) {
+      return 'Unknown District';
+    }
+    
+    final standardizedVillage = village.trim();
+    final district = villageToDistrictMap[standardizedVillage];
+    return district ?? 'Unknown District';
   }
-  
-  // Standardize the village name for lookup
-  final standardizedVillage = village.trim();
-  
-  // Look up the district in our map
-  final district = villageToDistrictMap[standardizedVillage];
-  
-  // Return the found district or default to "Unknown District"
-  return district ?? 'Unknown District';
-}
-
 }
