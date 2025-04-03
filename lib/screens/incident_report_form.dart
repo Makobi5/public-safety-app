@@ -16,6 +16,11 @@ import 'package:http/http.dart' as http;
 import '/config/api_keys.dart';
 import 'dart:convert';
 import '../utils/uganda_regions_mapper.dart';
+import 'package:google_maps_webservice/geocoding.dart';
+import 'package:google_maps_webservice/places.dart';
+import '/config/api_keys.dart';
+import 'package:google_maps_flutter/google_maps_flutter.dart';
+import 'package:google_maps_webservice/geocoding.dart' as gmaps;
 
 class IncidentReportFormPage extends StatefulWidget {
   const IncidentReportFormPage({Key? key}) : super(key: key);
@@ -34,7 +39,7 @@ class _IncidentReportFormPageState extends State<IncidentReportFormPage> {
   DateTime? _selectedDate;
   TimeOfDay? _selectedTime;
   int _currentStep = 0;
-  
+
   // Location variables
   Position? _currentPosition;
   String _locationAddress = "Location not captured yet";
@@ -257,32 +262,70 @@ class _IncidentReportFormPageState extends State<IncidentReportFormPage> {
     );
   }
 
+// Future<void> _getCurrentLocation() async {
+//   setState(() => _isCapturingLocation = true);
+  
+//   try {
+//     Position position = await Geolocator.getCurrentPosition(
+//       desiredAccuracy: LocationAccuracy.bestForNavigation,
+//     );
+    
+//     print('Raw Coordinates: ${position.latitude},${position.longitude}');
+    
+//     setState(() {
+//       _currentPosition = position;
+//       _latitude = position.latitude;
+//       _longitude = position.longitude;
+//     });
+
+//     // First try OSM
+//     await _getAddressFromOSM();
+    
+//     // If still not Kabale, try our local mapping
+//     if (!_locationAddress.toLowerCase().contains('kabale')) {
+//       _applyUgandaSpecificMapping();
+//     }
+    
+//   } catch (e) {
+//     debugPrint('Location error: $e');
+//   } finally {
+//     setState(() => _isCapturingLocation = false);
+//   }
+// }
+// In _IncidentReportFormPageState class
 Future<void> _getCurrentLocation() async {
+  // Check location permissions first
+  bool hasPermission = await _handleLocationPermission();
+  if (!hasPermission) {
+    // If no permission, exit early
+    return;
+  }
+  
   setState(() => _isCapturingLocation = true);
   
   try {
+    // Make sure to use a reasonable timeout
     Position position = await Geolocator.getCurrentPosition(
-      desiredAccuracy: LocationAccuracy.bestForNavigation,
+      desiredAccuracy: LocationAccuracy.best,
+      timeLimit: const Duration(seconds: 10)
     );
-    
-    print('Raw Coordinates: ${position.latitude},${position.longitude}');
-    
+
     setState(() {
-      _currentPosition = position;
+      _currentPosition = position;  // Make sure to set this
       _latitude = position.latitude;
       _longitude = position.longitude;
     });
 
-    // First try OSM
-    await _getAddressFromOSM();
-    
-    // If still not Kabale, try our local mapping
-    if (!_locationAddress.toLowerCase().contains('kabale')) {
-      _applyUgandaSpecificMapping();
-    }
+    // Now get the address
+    await _getAddressFromGoogleMaps();
     
   } catch (e) {
-    debugPrint('Location error: $e');
+    print('Location error: $e');
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text('Error capturing location: ${e.toString()}')),
+    );
+    // Fallback to local mapping
+    _applyUgandaSpecificMapping();
   } finally {
     setState(() => _isCapturingLocation = false);
   }
@@ -319,38 +362,155 @@ void _applyUgandaSpecificMapping() {
   });
 }
 
-Future<void> _getAddressFromOSM() async {
-  try {
-    if (_currentPosition != null) {
-      final lat = _currentPosition!.latitude;
-      final lon = _currentPosition!.longitude;
+// Future<void> _getAddressFromOSM() async {
+//   try {
+//     if (_currentPosition != null) {
+//       final lat = _currentPosition!.latitude;
+//       final lon = _currentPosition!.longitude;
 
-      // First check Kampala coordinates
-      if (lat >= 0.25 && lat <= 0.4 && lon >= 32.5 && lon <= 32.7) {
-        final url = 'https://nominatim.openstreetmap.org/reverse?format=json&lat=$lat&lon=$lon&zoom=18&addressdetails=1';
-        final response = await http.get(Uri.parse(url));
+//       // First check Kampala coordinates
+//       if (lat >= 0.25 && lat <= 0.4 && lon >= 32.5 && lon <= 32.7) {
+//         final url = 'https://nominatim.openstreetmap.org/reverse?format=json&lat=$lat&lon=$lon&zoom=18&addressdetails=1';
+//         final response = await http.get(Uri.parse(url));
         
-        if (response.statusCode == 200) {
-          final data = json.decode(response.body);
-          final addressParts = data['address'] ?? {}; // Properly define addressParts here
+//         if (response.statusCode == 200) {
+//           final data = json.decode(response.body);
+//           final addressParts = data['address'] ?? {}; // Properly define addressParts here
 
-          setState(() {
-            _detectedRegion = 'Central Region';
-            _detectedDistrict = 'Kampala';
-            _detectedVillage = addressParts['neighbourhood'] ?? 'Kampala';
-            _locationAddress = '${_detectedVillage}, Kampala, Central Region';
-            _latitude = lat;
-            _longitude = lon;
-          });
+//           setState(() {
+//             _detectedRegion = 'Central Region';
+//             _detectedDistrict = 'Kampala';
+//             _detectedVillage = addressParts['neighbourhood'] ?? 'Kampala';
+//             _locationAddress = '${_detectedVillage}, Kampala, Central Region';
+//             _latitude = lat;
+//             _longitude = lon;
+//           });
+//         }
+//         return;
+//       }
+
+//       // Rest of your OSM lookup logic...
+//     }
+//   } catch (e) {
+//     // Error handling
+//   }
+// }
+
+Future<void> _getAddressFromGoogleMaps() async {
+  // Guard clause - exit if we don't have coordinates
+  if (_latitude == null || _longitude == null) {
+    debugPrint('Cannot get address: coordinates are null');
+    return;
+  }
+  
+  try {
+    debugPrint('Getting address for coordinates: $_latitude, $_longitude');
+    
+    // 1. Initialize Geocoding with the API key
+    final geocoding = GoogleMapsGeocoding(apiKey: ApiKeys.googleMapsApiKey);
+    
+    // 2. Make API call with proper location object
+    final response = await geocoding.searchByLocation(
+      gmaps.Location(lat: _latitude!, lng: _longitude!),
+      language: 'en', // explicitly set language
+      locationType: ['ROOFTOP'], // try to get the most precise result
+    );
+
+    // 3. Check if response is successful and has results
+    if (response.isOkay && response.results.isNotEmpty) {
+      final result = response.results.first;
+      final addressComponents = result.addressComponents;
+      
+      debugPrint('Google Maps returned address: ${result.formattedAddress}');
+
+      // 4. Extract components in a structured way
+      String? district, region, village, country, streetName;
+      
+      for (var component in addressComponents) {
+        // Log each component to help with debugging
+        debugPrint('Address component: ${component.longName} - Types: ${component.types.join(', ')}');
+        
+        if (component.types.contains('administrative_area_level_2')) {
+          district = component.longName;
+        } else if (component.types.contains('administrative_area_level_1')) {
+          region = component.longName;
+        } else if (component.types.contains('locality')) {
+          village = component.longName;
+        } else if (component.types.contains('sublocality') && village == null) {
+          // Fallback for village if locality not found
+          village = component.longName;
+        } else if (component.types.contains('country')) {
+          country = component.longName;
+        } else if (component.types.contains('route')) {
+          streetName = component.longName;
         }
-        return;
       }
 
-      // Rest of your OSM lookup logic...
+      // Check if we're in Uganda (or fallback to coordinates)
+      bool isLikelyInUganda = country?.toLowerCase() == 'uganda' || 
+                             _isCoordinateInUganda(_latitude!, _longitude!);
+
+      // 5. Update state with the geocoded information
+      setState(() {
+        _detectedRegion = region ?? 'Unknown Region';
+        _detectedDistrict = district ?? 'Unknown District';
+        _detectedVillage = village ?? 'Unknown Village';
+        
+        // Use street name in address if available
+        if (streetName != null) {
+          _locationAddress = result.formattedAddress ?? 
+                           '$streetName, $_detectedVillage, $_detectedDistrict, $_detectedRegion';
+        } else {
+          _locationAddress = result.formattedAddress ?? 
+                           '$_detectedVillage, $_detectedDistrict, $_detectedRegion';
+        }
+        
+        // If we have reason to believe we're in Kabale, force Western Region
+        if (_detectedDistrict == 'Kabale' || 
+            _detectedVillage == 'Kabale' ||
+            (_isCoordinateInKabaleArea(_latitude!, _longitude!))) {
+          _detectedRegion = 'Western Region';
+          _locationAddress = 'Kabale Area, Kabale, Western Region';
+        }
+        
+        // If not in Uganda, use our Uganda-specific mapping as fallback
+        if (!isLikelyInUganda) {
+          _applyUgandaSpecificMapping();
+        }
+      });
+      
+      debugPrint('Final detected location: $_locationAddress');
+      
+    } else {
+      // Handle empty results
+      debugPrint('Google Maps returned no results or error: ${response.status}');
+      _applyUgandaSpecificMapping();
     }
   } catch (e) {
-    // Error handling
+    debugPrint('Geocoding error: $e');
+    
+    // Show error to user
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text('Error getting location details. Using approximate location.'),
+        duration: Duration(seconds: 3),
+      ),
+    );
+    
+    // Fallback to our custom mapping logic
+    _applyUgandaSpecificMapping();
   }
+}
+
+// Helper method to determine if coordinates are in Kabale area
+bool _isCoordinateInKabaleArea(double lat, double lon) {
+  // Approximate bounding box for Kabale area
+  const double minLat = -1.35; 
+  const double maxLat = -1.0;
+  const double minLon = 29.9;
+  const double maxLon = 30.3;
+  
+  return lat >= minLat && lat <= maxLat && lon >= minLon && lon <= maxLon;
 }
 // Helper method to determine if coordinates are likely in Uganda
 bool _isCoordinateInUganda(double lat, double lon) {
@@ -1642,5 +1802,7 @@ Widget build(BuildContext context) {
   );
 }
       }
+
+      
     
     
