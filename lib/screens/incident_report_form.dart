@@ -16,6 +16,7 @@ import 'package:http/http.dart' as http;
 import '/config/api_keys.dart';
 import 'dart:convert';
 import '../utils/uganda_regions_mapper.dart';
+import 'dart:math';
 
 class IncidentReportFormPage extends StatefulWidget {
   const IncidentReportFormPage({Key? key}) : super(key: key);
@@ -34,6 +35,10 @@ class _IncidentReportFormPageState extends State<IncidentReportFormPage> {
   DateTime? _selectedDate;
   TimeOfDay? _selectedTime;
   int _currentStep = 0;
+  String? _selectedPoliceStationId;
+  String? _selectedPoliceStationName;
+  bool _isLoadingStations = false;
+  List<Map<String, dynamic>> _policeStations = [];
   
   // Location variables
   Position? _currentPosition;
@@ -83,6 +88,7 @@ class _IncidentReportFormPageState extends State<IncidentReportFormPage> {
       });
     }
   }
+  
 
   Future<void> _selectTime(BuildContext context) async {
     final TimeOfDay? picked = await showTimePicker(
@@ -220,7 +226,95 @@ class _IncidentReportFormPageState extends State<IncidentReportFormPage> {
 
     return true;
   }
+Future<void> _fetchPoliceStations(String districtName) async {
+  setState(() => _isLoadingStations = true);
+  
+  try {
+    final supabase = Supabase.instance.client;
+    
+    // 1. Get district with location data
+    final districtResponse = await supabase
+      .from('districts')
+      .select('id, lat, lon')
+      .eq('name', districtName)
+      .maybeSingle();
 
+    if (districtResponse == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('$districtName district data not found')),
+      );
+      return;
+    }
+
+    // 2. Get all police stations in this district
+    final stationsResponse = await supabase
+      .from('police_stations')
+      .select('id, name, address, lat, lon, coverage_status')
+      .eq('district_id', districtResponse['id']);
+
+    // 3. Process stations data
+    final stations = (stationsResponse as List).map((station) => {
+      'id': station['id'],
+      'name': station['name'] ?? 'Unknown Station',
+      'address': station['address'] ?? 'Address not available',
+      'lat': station['lat'],
+      'lon': station['lon'],
+      'coverage_status': station['coverage_status'] ?? 0.0,
+    }).toList();
+
+    // 4. Calculate distances if we have location data
+    if (_latitude != null && _longitude != null) {
+      for (final station in stations) {
+        if (station['lat'] != null && station['lon'] != null) {
+          station['distance'] = _calculateDistance(
+            _latitude!,
+            _longitude!,
+            station['lat'],
+            station['lon']
+          );
+        }
+      }
+      // Sort by distance if available
+      stations.sort((a, b) => (a['distance'] ?? double.infinity)
+          .compareTo(b['distance'] ?? double.infinity));
+    }
+
+    setState(() {
+      _policeStations = stations;
+      if (stations.isNotEmpty) {
+        _selectedPoliceStationId = stations[0]['id'];
+        _selectedPoliceStationName = stations[0]['name'];
+      }
+    });
+
+  } catch (e) {
+    debugPrint('Police station fetch error: $e');
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text('Error loading stations: ${e.toString().split(':').first}'),
+        duration: const Duration(seconds: 3),
+      ),
+    );
+  } finally {
+    setState(() => _isLoadingStations = false);
+  }
+}
+
+// Haversine distance calculation method
+double _calculateDistance(double lat1, double lon1, double lat2, double lon2) {
+  const R = 6371; // Earth radius in km
+  final dLat = _toRadians(lat2 - lat1);
+  final dLon = _toRadians(lon2 - lon1);
+  final a = sin(dLat / 2) * sin(dLat / 2) +
+      cos(_toRadians(lat1)) * cos(_toRadians(lat2)) *
+      sin(dLon / 2) * sin(dLon / 2);
+  final c = 2 * atan2(sqrt(a), sqrt(1 - a));
+  return R * c;
+}
+
+double _toRadians(double degree) {
+  return degree * pi / 180;
+}
   // Show dialog to prompt user to enable location services
   Future<void> _showLocationServiceDialog() async {
     return showDialog<void>(
@@ -265,20 +359,21 @@ Future<void> _getCurrentLocation() async {
       desiredAccuracy: LocationAccuracy.bestForNavigation,
     );
     
-    print('Raw Coordinates: ${position.latitude},${position.longitude}');
-    
     setState(() {
       _currentPosition = position;
       _latitude = position.latitude;
       _longitude = position.longitude;
     });
 
-    // First try OSM
     await _getAddressFromOSM();
     
-    // If still not Kabale, try our local mapping
     if (!_locationAddress.toLowerCase().contains('kabale')) {
       _applyUgandaSpecificMapping();
+    }
+    
+    // After location is set, fetch police stations for the district
+    if (_detectedDistrict != null) {
+      await _fetchPoliceStations(_detectedDistrict!);
     }
     
   } catch (e) {
@@ -554,135 +649,189 @@ Future<String> _uploadFile(PlatformFile file) async {
     }
   }
 
-  // Build location section (replaced form fields with GPS capture)
-  Widget _buildLocationSection() {
-    return Container(
-      width: double.infinity,
-      padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(8),
-        border: Border.all(color: Colors.grey.shade200),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          const Text(
-            'Location Information',
-            style: TextStyle(
-              fontSize: 18,
-              fontWeight: FontWeight.bold,
+// Update your _buildLocationSection method to include police station selection
+Widget _buildLocationSection() {
+  return Container(
+    width: double.infinity,
+    padding: const EdgeInsets.all(16),
+    decoration: BoxDecoration(
+      color: Colors.white,
+      borderRadius: BorderRadius.circular(8),
+      border: Border.all(color: Colors.grey.shade200),
+    ),
+    child: Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const Text(
+          'Location Information',
+          style: TextStyle(
+            fontSize: 18,
+            fontWeight: FontWeight.bold,
+          ),
+        ),
+        const SizedBox(height: 16),
+        
+        // Location Capture Card
+        Container(
+          padding: const EdgeInsets.all(16),
+          decoration: BoxDecoration(
+            color: _currentPosition != null ? Colors.green.shade50 : Colors.orange.shade50,
+            borderRadius: BorderRadius.circular(8),
+            border: Border.all(
+              color: _currentPosition != null ? Colors.green.shade200 : Colors.orange.shade200,
             ),
           ),
-          const SizedBox(height: 16),
-          
-          // GPS location status
-          Container(
-            padding: const EdgeInsets.all(16),
-            decoration: BoxDecoration(
-              color: _currentPosition != null ? Colors.green.shade50 : Colors.orange.shade50,
-              borderRadius: BorderRadius.circular(8),
-              border: Border.all(
-                color: _currentPosition != null ? Colors.green.shade200 : Colors.orange.shade200,
-              ),
-            ),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Row(
-                  children: [
-                    Icon(
-                      _currentPosition != null ? Icons.location_on : Icons.location_off,
-                      color: _currentPosition != null ? Colors.green : Colors.orange,
-                    ),
-                    const SizedBox(width: 8),
-                    Text(
-                      _currentPosition != null ? 'Location captured' : 'Location not captured',
-                      style: TextStyle(
-                        fontWeight: FontWeight.bold,
-                        color: _currentPosition != null ? Colors.green.shade700 : Colors.orange.shade700,
-                      ),
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 8),
-                if (_currentPosition != null) ...[
-                  Text('Address: $_locationAddress'),
-                  const SizedBox(height: 4),
-                  Text('Coordinates: ${_currentPosition!.latitude.toStringAsFixed(6)}, ${_currentPosition!.longitude.toStringAsFixed(6)}'),
-                ] else ...[
-                  const Text('Your location will be automatically captured when you submit the report.'),
-                ],
-                const SizedBox(height: 12),
-                Center(
-                  child: ElevatedButton.icon(
-                    onPressed: _isCapturingLocation ? null : _getCurrentLocation,
-                    icon: _isCapturingLocation 
-                        ? const SizedBox(
-                            width: 20,
-                            height: 20,
-                            child: CircularProgressIndicator(
-                              strokeWidth: 2,
-                              valueColor: AlwaysStoppedAnimation<Color>(Colors.white),
-                            ),
-                          )
-                        : const Icon(Icons.my_location),
-                    label: Text(_isCapturingLocation ? 'Capturing...' : _currentPosition != null ? 'Refresh Location' : 'Capture Location'),
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: const Color(0xFF003366),
-                      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                children: [
+                  Icon(
+                    _currentPosition != null ? Icons.location_on : Icons.location_off,
+                    color: _currentPosition != null ? Colors.green : Colors.orange,
+                  ),
+                  const SizedBox(width: 8),
+                  Text(
+                    _currentPosition != null ? 'Location captured' : 'Location not captured',
+                    style: TextStyle(
+                      fontWeight: FontWeight.bold,
+                      color: _currentPosition != null ? Colors.green.shade700 : Colors.orange.shade700,
                     ),
                   ),
-                ),
+                ],
+              ),
+              const SizedBox(height: 8),
+              if (_currentPosition != null) ...[
+                Text('Address: $_locationAddress'),
+                const SizedBox(height: 4),
+                Text('Coordinates: ${_latitude?.toStringAsFixed(6)}, ${_longitude?.toStringAsFixed(6)}'),
+              ] else ...[
+                const Text('Please capture your location to see nearby police stations'),
               ],
-            ),
+              const SizedBox(height: 12),
+              Center(
+                child: ElevatedButton.icon(
+                  onPressed: _isCapturingLocation ? null : _getCurrentLocation,
+                  icon: _isCapturingLocation 
+                      ? const SizedBox(
+                          width: 20,
+                          height: 20,
+                          child: CircularProgressIndicator(
+                            strokeWidth: 2,
+                            valueColor: AlwaysStoppedAnimation<Color>(Colors.white),
+                          ),
+                        )
+                      : const Icon(Icons.my_location),
+                  label: Text(_isCapturingLocation ? 'Capturing...' : 'Capture Location'),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: const Color(0xFF003366),
+                    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+                  ),
+                ),
+              ),
+            ],
           ),
-          
+        ),
+        
+        // Police Station Selection (only shown after location is captured)
+        if (_currentPosition != null) ...[
           const SizedBox(height: 20),
           const Text(
-            'Additional Location Details',
+            'Forward to Police Station',
             style: TextStyle(
               fontSize: 16,
               fontWeight: FontWeight.w500,
             ),
           ),
           const SizedBox(height: 8),
-          TextFormField(
-            controller: _additionalLocationController,
-            decoration: InputDecoration(
-              hintText: 'Provide any additional details about the location',
-              border: OutlineInputBorder(
-                borderRadius: BorderRadius.circular(8),
-              ),
-              contentPadding: const EdgeInsets.all(16),
-            ),
-            maxLines: 3,
-          ),
-
-          const SizedBox(height: 20),
-          const Text(
-            'Landmark Reference (Optional)',
-            style: TextStyle(
-              fontSize: 16,
-              fontWeight: FontWeight.w500,
-            ),
-          ),
-          const SizedBox(height: 8),
-          TextFormField(
-            controller: _landmarkController,
-            decoration: InputDecoration(
-              hintText: 'e.g., Near Kabale University',
-              border: OutlineInputBorder(
-                borderRadius: BorderRadius.circular(8),
-              ),
-              contentPadding: const EdgeInsets.all(16),
-            ),
-          ),
+          _isLoadingStations
+              ? const Center(child: CircularProgressIndicator())
+              : _policeStations.isEmpty
+                  ? const Text('No police stations found in this district')
+                  : Container(
+                      decoration: BoxDecoration(
+                        border: Border.all(color: Colors.grey.shade300),
+                        borderRadius: BorderRadius.circular(8),
+                      ),
+                      child: DropdownButtonHideUnderline(
+                        child: DropdownButton<String>(
+                          isExpanded: true,
+                          value: _selectedPoliceStationId,
+                          onChanged: (String? newValue) {
+                            setState(() {
+                              _selectedPoliceStationId = newValue;
+                              _selectedPoliceStationName = _policeStations
+                                  .firstWhere((station) => station['id'] == newValue)['name'];
+                            });
+                          },
+                          items: _policeStations.map<DropdownMenuItem<String>>((station) {
+                            return DropdownMenuItem<String>(
+                              value: station['id'],
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Text(station['name'],
+                                      style: const TextStyle(fontWeight: FontWeight.bold)),
+                                  Text('${station['address']}',
+                                      style: TextStyle(fontSize: 12, color: Colors.grey[600])),
+                                  if (station['distance'] != null)
+                                    Text('${station['distance'].toStringAsFixed(1)} km away',
+                                        style: TextStyle(fontSize: 12, color: Colors.grey[600])),
+                                ],
+                              ),
+                            );
+                          }).toList(),
+                        ),
+                      ),
+                    ),
         ],
-      ),
-    );
-  }
+        
+        // Additional Location Details
+        const SizedBox(height: 20),
+        const Text(
+          'Additional Location Details',
+          style: TextStyle(
+            fontSize: 16,
+            fontWeight: FontWeight.w500,
+          ),
+        ),
+        const SizedBox(height: 8),
+        TextFormField(
+          controller: _additionalLocationController,
+          decoration: InputDecoration(
+            hintText: 'Provide any additional details about the location',
+            border: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(8),
+            ),
+            contentPadding: const EdgeInsets.all(16),
+          ),
+          maxLines: 3,
+        ),
 
+        // Landmark Reference
+        const SizedBox(height: 20),
+        const Text(
+          'Landmark Reference (Optional)',
+          style: TextStyle(
+            fontSize: 16,
+            fontWeight: FontWeight.w500,
+          ),
+        ),
+        const SizedBox(height: 8),
+        TextFormField(
+          controller: _landmarkController,
+          decoration: InputDecoration(
+            hintText: 'e.g., Near Kabale University',
+            border: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(8),
+            ),
+            contentPadding: const EdgeInsets.all(16),
+          ),
+        ),
+      ],
+    ),
+  );
+}
   // Build file upload section
   Widget _buildFileUploadSection() {
     return Container(
@@ -866,229 +1015,176 @@ Future<String> _uploadFile(PlatformFile file) async {
 
 void _submitReport() async {
   if (_formKey.currentState!.validate()) {
-    // Check if location is captured, if not, capture it now
+    // Check if location is captured
     if (_currentPosition == null) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Capturing your location...'), duration: Duration(seconds: 2)),
-      );
+        const SnackBar(
+          content: Text('Capturing your location...'),
+          duration: Duration(seconds: 2),
+      ));
       
       await _getCurrentLocation();
       
-      // If still no location, ask the user if they want to continue
       if (_currentPosition == null) {
-        bool continueWithoutLocation = await showDialog(
+        final shouldContinue = await showDialog<bool>(
           context: context,
           builder: (context) => AlertDialog(
             title: const Text('Location Not Available'),
-            content: const Text('We couldn\'t capture your location. Do you want to continue submitting the report without location data?'),
+            content: const Text('Some features require location. Continue without?'),
             actions: [
               TextButton(
-                onPressed: () => Navigator.of(context).pop(false),
+                onPressed: () => Navigator.pop(context, false),
                 child: const Text('Cancel'),
               ),
               TextButton(
-                onPressed: () => Navigator.of(context).pop(true),
+                onPressed: () => Navigator.pop(context, true),
                 child: const Text('Continue'),
               ),
             ],
           ),
         ) ?? false;
         
-        if (!continueWithoutLocation) {
-          return;
-        }
+        if (!shouldContinue) return;
       }
     }
     
-    // Show loading indicator
-    setState(() {
-      _isUploading = true;
-    });
+    setState(() => _isUploading = true);
     
     try {
-      // 1. Upload files to server and get URLs
-      List<String> fileUrls = [];
+      // 1. Upload files
+      final fileUrls = await _uploadFiles();
       
-      if (_uploadedFiles.isNotEmpty) {
-        // Show uploading files progress
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('Uploading files...'),
-            duration: Duration(seconds: 3),
-          ),
-        );
-        
-        for (var file in _uploadedFiles) {
-          print('Uploading file: ${file.name} (${_formatFileSize(file.size)})');
-          String fileUrl = await _uploadFile(file);
-          
-          // Check if file upload failed
-          if (fileUrl.startsWith('ERROR:')) {
-            throw Exception('Failed to upload file: ${file.name}');
-          }
-          
-          fileUrls.add(fileUrl);
-          print('Successfully uploaded: ${file.name} to $fileUrl');
-        }
-      }
-        
-      // 2. Create incident data object
-      final user = Supabase.instance.client.auth.currentUser; // Get current user
-      String? userId = user?.id;
+      // 2. Prepare incident data
+      final incidentData = await _prepareIncidentData(fileUrls);
+      
+      // 3. Submit to database
+      final response = await Supabase.instance.client
+          .from('incidents')
+          .insert(incidentData);
+         
 
-      if (userId == null) {
-        ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('User not logged in'), backgroundColor: Colors.red)
-        );
-        return;
-      }
-      
-      // Fix for the non-final field promotion error in incident_report_form.dart
-      // If we have a district but not a correctly mapped region, use our mapper
-      String? districtName = _detectedDistrict;
-      if (districtName != null && 
-          districtName != 'Unknown District' &&
-          (_detectedRegion == null || 
-          _detectedRegion == 'Unknown Region')) {
-        
-        // Try to get the correct region from our mapper
-        String mappedRegion = UgandaRegionsMapper.getRegionForDistrict(districtName);
-        if (mappedRegion != 'Unknown Region') {
-          _detectedRegion = mappedRegion;
-        }
-      }
+      if (response.error != null) throw Exception(response.error!.message);
 
-      // Also update the Kabale special case:
-      if (districtName == 'Kabale' || 
-          _detectedVillage == 'Ndorwa' || 
-          _detectedVillage == 'Hamurwa') {
-        _detectedRegion = 'Western Region';
-      }
-
-      // Map village to district if district is unknown
-      String? villageName = _detectedVillage;
-      if ((districtName == null || districtName == 'Unknown District') && 
-          villageName != null && villageName != 'Unknown Village') {
-        String mappedDistrict = UgandaRegionsMapper.getDistrictForVillage(villageName);
-        if (mappedDistrict != 'Unknown District') {
-          _detectedDistrict = mappedDistrict;
-          
-          // Now that we have a district, also ensure we have the right region
-          String mappedRegion = UgandaRegionsMapper.getRegionForDistrict(mappedDistrict);
-          if (mappedRegion != 'Unknown Region') {
-            _detectedRegion = mappedRegion;
-          }
-        }
-      }
-      
-      // Create incident data object that matches the database schema
-      // Make sure all required fields have default values if they're null
-      Map<String, dynamic> incidentData = {
-        'user_id': userId,
-        'title': '${_selectedIncidentType ?? "Incident"} Report',
-        'description': _descriptionController.text,
-        'incident_type': _selectedIncidentType,
-        
-        // Location data with proper region mapping
-        'region': _detectedRegion ?? "Unknown Region",
-        'district': _detectedDistrict ?? "Unknown District",
-        'village': _detectedVillage ?? "Unknown Village",
-        'latitude': _latitude,
-        'longitude': _longitude,
-        
-        // System fields
-        'status': 'submitted',
-        'is_anonymous': false, // Default value based on schema
-        'created_at': DateTime.now().toIso8601String(),
-        'updated_at': DateTime.now().toIso8601String(),
-        
-        // Additional fields
-        'additional_location': _additionalLocationController.text,
-        'additional_notes': _additionalNotesController.text,
-        'landmark': _landmarkController.text,
-        'file_urls': fileUrls,
-        'incident_date': _selectedDate != null ? _selectedDate!.toIso8601String() : null,
-        'incident_time': _selectedTime != null ? '${_selectedTime!.hour.toString().padLeft(2, '0')}:${_selectedTime!.minute.toString().padLeft(2, '0')}' : null,
-        'witness_info': _witnessInfoController.text,
-      };
-      
-      // Print incident data for debugging
-      print('Sending incident data with location: ${json.encode(incidentData)}');
-      
-      // 3. Submit the incident data to the API
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Saving incident report...'),
-          duration: Duration(seconds: 2),
-        ),
-      );
-      
-      final response = await http.post(
-        Uri.parse(_incidentsEndpoint),
-        headers: {
-          'Content-Type': 'application/json',
-          'apikey': _authToken,
-          'Authorization': 'Bearer $_authToken',
-          'Prefer': 'return=minimal'
-        },
-        body: json.encode(incidentData),
-      );
-      
-      // Log the complete response for debugging
-      print('Database response status: ${response.statusCode}');
-      print('Database response body: ${response.body}');
-      
-      if (response.statusCode == 200 || response.statusCode == 201) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('Report submitted successfully'),
-            backgroundColor: Colors.green,
-            duration: Duration(seconds: 3),
-          ),
-        );
-        
-        // Add a slight delay to ensure the snackbar is visible
-        await Future.delayed(const Duration(milliseconds: 500));
-        
-        // Navigate to user dashboard
-        Navigator.of(context).pushNamedAndRemoveUntil(
-          '/user-dashboard', // Use the correct route path
-          (route) => false,
-        );
-        
-        // Show persistent success message on dashboard
-        Future.delayed(const Duration(milliseconds: 300), () {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(
-              content: Text('Your safety report has been submitted successfully. Thank you for contributing to community safety.'),
-              backgroundColor: Colors.green,
-              duration: Duration(seconds: 5),
-            ),
-          );
-        });
-      } else {
-        throw Exception('Failed to save incident to database. Status: ${response.statusCode}, Response: ${response.body}');
-      }
+      // 4. Handle success
+      _handleSubmissionSuccess();
     } catch (e) {
-      print('Error submitting report: $e');
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('Error submitting report: ${e.toString().length > 100 ? '${e.toString().substring(0, 100)}...' : e.toString()}'),
-          backgroundColor: Colors.red,
-          duration: const Duration(seconds: 5),
-          action: SnackBarAction(
-            label: 'RETRY',
-            onPressed: _submitReport,
-          ),
-        ),
-      );
+      _handleSubmissionError(e);
     } finally {
-      setState(() {
-        _isUploading = false;
-      });
+      setState(() => _isUploading = false);
     }
   }
 }
+
+Future<List<String>> _uploadFiles() async {
+  final fileUrls = <String>[];
+  if (_uploadedFiles.isEmpty) return fileUrls;
+
+  ScaffoldMessenger.of(context).showSnackBar(
+    const SnackBar(content: Text('Uploading files...')),
+  );
+
+  for (final file in _uploadedFiles) {
+    debugPrint('Uploading: ${file.name} (${_formatFileSize(file.size)})');
+    final fileUrl = await _uploadFile(file);
+    if (fileUrl.startsWith('ERROR')) throw Exception('File upload failed');
+    fileUrls.add(fileUrl);
+  }
+  return fileUrls;
+}
+
+Future<Map<String, dynamic>> _prepareIncidentData(List<String> fileUrls) async {
+  final user = Supabase.instance.client.auth.currentUser;
+  if (user == null) throw Exception('User not logged in');
+
+  // Ensure proper region mapping
+  _resolveRegionAndDistrict();
+
+  return {
+    'user_id': user.id,
+    'title': '${_selectedIncidentType ?? "Incident"} Report',
+    'description': _descriptionController.text,
+    'incident_type': _selectedIncidentType,
+    'region': _detectedRegion ?? "Unknown Region",
+    'district': _detectedDistrict ?? "Unknown District",
+    'village': _detectedVillage ?? "Unknown Village",
+    'latitude': _latitude,
+    'longitude': _longitude,
+    'status': _selectedPoliceStationId != null ? 'assigned' : 'submitted',
+    'is_anonymous': false,
+    'additional_location': _additionalLocationController.text,
+    'additional_notes': _additionalNotesController.text,
+    'landmark': _landmarkController.text,
+    'file_urls': fileUrls,
+    'incident_date': _selectedDate?.toIso8601String(),
+    'incident_time': _selectedTime?.format(context),
+    'witness_info': _witnessInfoController.text,
+    if (_selectedPoliceStationId != null) ...{
+      'police_station_id': _selectedPoliceStationId,
+      'police_station_name': _selectedPoliceStationName,
+    }
+  };
+}
+
+void _resolveRegionAndDistrict() {
+  final districtName = _detectedDistrict;
+  if (districtName != null && districtName != 'Unknown District') {
+    if (_detectedRegion == null || _detectedRegion == 'Unknown Region') {
+      _detectedRegion = UgandaRegionsMapper.getRegionForDistrict(districtName);
+    }
+    
+    // Special case for Kabale
+    if (districtName == 'Kabale' || 
+        ['Ndorwa', 'Hamurwa'].contains(_detectedVillage)) {
+      _detectedRegion = 'Western Region';
+    }
+  }
+
+  final villageName = _detectedVillage;
+  if ((districtName == null || districtName == 'Unknown District') && 
+      villageName != null && villageName != 'Unknown Village') {
+    final mappedDistrict = UgandaRegionsMapper.getDistrictForVillage(villageName);
+    if (mappedDistrict != 'Unknown District') {
+      _detectedDistrict = mappedDistrict;
+      _detectedRegion = UgandaRegionsMapper.getRegionForDistrict(mappedDistrict);
+    }
+  }
+}
+
+void _handleSubmissionSuccess() {
+  final message = _selectedPoliceStationId != null
+      ? 'Report submitted to $_selectedPoliceStationName'
+      : 'Report submitted successfully';
+
+  ScaffoldMessenger.of(context)
+    ..hideCurrentSnackBar()
+    ..showSnackBar(
+      SnackBar(
+        content: Text(message),
+        backgroundColor: Colors.green,
+        duration: const Duration(seconds: 3),
+      ),
+    );
+
+  Navigator.of(context).pushNamedAndRemoveUntil(
+    '/user-dashboard',
+    (route) => false,
+  );
+}
+
+void _handleSubmissionError(dynamic error) {
+  debugPrint('Submission error: $error');
+  ScaffoldMessenger.of(context).showSnackBar(
+    SnackBar(
+      content: Text('Submission failed: ${error.toString().split(':').first}'),
+      backgroundColor: Colors.red,
+      action: SnackBarAction(
+        label: 'Retry',
+        onPressed: _submitReport,
+      ),
+    ),
+  );
+}
+    
 @override
 Widget build(BuildContext context) {
   final screenSize = MediaQuery.of(context).size;

@@ -37,7 +37,13 @@ class _AdminDashboardState extends State<AdminDashboard> {
   final _searchController = TextEditingController();
   // Add this field in your _AdminDashboardState class
 final NotificationService _notificationService = NotificationService();
-  
+  // Add these new variables for station filtering
+  String? _assignedStationId;
+  String? _assignedStationName;
+  bool _isStationAdmin = false;
+  bool _isSuperAdmin = false;
+  List<Map<String, dynamic>> _policeStations = [];
+  String? _selectedStationId;
   bool _isLoading = false;
   String? _successMessage;
   String? _errorMessage;
@@ -69,10 +75,86 @@ void initState() {
   _getCurrentUser();
    _setupNotificationListener();
      _loadNotificationsState(); 
+       _getAdminRole();  // Add this line
+  _fetchPoliceStations();
   
   // Add this to set up a timer to check for new reports periodically
 // Initialize notification service - will start listening in initState
 
+}
+// New method to fetch admin's role and assigned station
+Future<void> _getAdminRole() async {
+  try {
+    final supabase = Supabase.instance.client;
+    final user = supabase.auth.currentUser;
+    
+    if (user != null) {
+      // First check if user is in admins table
+      final adminResponse = await supabase
+          .from('admins')
+          .select('role, user_id')
+          .eq('user_id', user.id)
+          .maybeSingle();
+      
+      if (adminResponse != null) {
+        // Check if this admin is a super admin
+        if (adminResponse['role'] == 'super_admin') {
+          setState(() {
+            _isSuperAdmin = true;
+            _isStationAdmin = false;
+          });
+          return; // Super admins can see all stations by default
+        }
+        
+        // Check admin_station_assignment table to get assigned station
+        final stationAssignment = await supabase
+            .from('admin_station_assignments')
+            .select('station_id')
+            .eq('admin_id', user.id)
+            .maybeSingle();
+        
+        if (stationAssignment != null && stationAssignment['station_id'] != null) {
+          final stationId = stationAssignment['station_id'];
+          
+          // Get station name from police_stations table
+          final stationResponse = await supabase
+              .from('police_stations')
+              .select('name')
+              .eq('id', stationId)
+              .maybeSingle();
+          
+          setState(() {
+            _assignedStationId = stationId;
+            _selectedStationId = stationId; // Initially set selected to assigned
+            _assignedStationName = stationResponse != null ? stationResponse['name'] : 'Unknown Station';
+            _isStationAdmin = true;
+          });
+        }
+      }
+    }
+  } catch (e) {
+    print('Error determining admin role: $e');
+  }
+}
+
+// New method to fetch all police stations (for super admins)
+Future<void> _fetchPoliceStations() async {
+  try {
+    final supabase = Supabase.instance.client;
+    
+    final response = await supabase
+        .from('police_stations')
+        .select('id, name')
+        .order('name');
+    
+    if (response != null && response is List) {
+      setState(() {
+        _policeStations = response.cast<Map<String, dynamic>>();
+      });
+    }
+  } catch (e) {
+    print('Error fetching police stations: $e');
+  }
 }
   // Get current user's name for display
   Future<void> _getCurrentUser() async {
@@ -574,12 +656,31 @@ Future<void> _fetchDashboardData() async {
   try {
     final supabase = Supabase.instance.client;
     
-    // IMPORTANT FIX: Modify how we fetch incident data
-    final responses = await Future.wait([
-      supabase.from('incidents').select().order('created_at', ascending: false),
-      // This query might be missing some "pending" cases if they have null status
-      supabase.from('incidents').select('id').not('status', 'eq', 'Pending'),
-    ]);
+    // MODIFIED PART: Filter incidents by station
+    // Create query builders with station filtering
+// MODIFIED PART: Filter incidents by station
+// Create query builders with station filtering
+var incidentsQuery = supabase.from('incidents').select();
+var respondedIncidentsQuery = supabase.from('incidents').select('id');
+
+// Apply station filter for station admins or if a station is selected
+// Apply station filter for station admins or if a station is selected
+if (!_isSuperAdmin && _selectedStationId != null) {
+  // Cast to Object explicitly or use toString()
+  final stationId = _selectedStationId as Object;
+  incidentsQuery = incidentsQuery.eq('station_id', stationId);
+  respondedIncidentsQuery = respondedIncidentsQuery.eq('station_id', stationId);
+} else if (_isStationAdmin && _assignedStationId != null) {
+  final stationId = _assignedStationId as Object;
+  incidentsQuery = incidentsQuery.eq('station_id', stationId);
+  respondedIncidentsQuery = respondedIncidentsQuery.eq('station_id', stationId);
+}
+
+// Complete the queries
+final responses = await Future.wait([
+  incidentsQuery.order('created_at', ascending: false),
+  respondedIncidentsQuery.not('status', 'eq', 'Pending'),
+]);
 
     if (responses[0] != null && responses[0] is List) {
       final incidents = responses[0].cast<Map<String, dynamic>>();
@@ -616,6 +717,7 @@ Future<void> _fetchDashboardData() async {
           'time': '${createdAt.hour.toString().padLeft(2, '0')}:${createdAt.minute.toString().padLeft(2, '0')}',
           'priority': _notificationService.getIncidentPriority(incident['incident_type']),
           'status': incident['status'] ?? 'Pending', // Explicitly set to 'Pending' if null
+          'station_id': incident['station_id'], // Add this line to track station_id
         };
       }).toList();
       
@@ -674,27 +776,50 @@ Future<void> _refreshDashboard() async {
 }
   
   // Fetch recent activities for the dashboard
-  Future<void> _fetchRecentActivity() async {
-    try {
-      // Get Supabase client
-      final supabase = Supabase.instance.client;
-      
-      // Fetch recent activity from incident_activity table
-      final response = await supabase
-          .from('incident_activity')
-          .select('*, incidents!inner(incident_type)')
-          .order('created_at', ascending: false)
-          .limit(5);
-      
-      if (response != null && response is List) {
-        // Process data for activity log display
-        recentActivities = response.cast<Map<String, dynamic>>();
-        print('Recent activity fetched: ${recentActivities.length} entries');
-      }
-    } catch (e) {
-      print('Error fetching recent activity: $e');
+Future<void> _fetchRecentActivity() async {
+  try {
+    // Get Supabase client
+    final supabase = Supabase.instance.client;
+    
+    // Create base query - Fix the join reference
+    var activityQuery = supabase
+        .from('incident_activity')
+        .select('*, incidents(incident_type, station_id)');
+        
+    // Apply station filter for station admins but with corrected reference
+    if (!_isSuperAdmin && _selectedStationId != null) {
+      final stationId = _selectedStationId as Object;
+      // Change the column reference to match actual schema
+      activityQuery = activityQuery.eq('incidents.station_id', stationId);
+    } else if (_isStationAdmin && _assignedStationId != null) {
+      final stationId = _assignedStationId as Object;
+      // Change the column reference to match actual schema
+      activityQuery = activityQuery.eq('incidents.station_id', stationId);
     }
+    
+    // Execute query with order and limit in one chain
+    final response = await activityQuery
+        .order('created_at', ascending: false)
+        .limit(5);
+    
+    if (response != null && response is List) {
+      // Process data for activity log display
+      recentActivities = response.cast<Map<String, dynamic>>();
+      print('Recent activity fetched: ${recentActivities.length} entries');
+    }
+  } catch (e) {
+    print('Error fetching recent activity: $e');
   }
+}
+// Method to handle station change (for super admins)
+void _onStationChanged(String? stationId) {
+  setState(() {
+    _selectedStationId = stationId;
+  });
+  
+  // Refresh dashboard with new station filter
+  _fetchDashboardData();
+}
   
   // Determine incident priority based on type
   String _getIncidentPriority(String? incidentType) {
@@ -1067,13 +1192,15 @@ void _showQuickAlertDialog() {
   );
 }
 
- @override
+@override
 Widget build(BuildContext context) {
   return Scaffold(
     appBar: AppBar(
-      title: const Text(
-        'Admin Dashboard',
-        style: TextStyle(
+      title: Text(
+        _isStationAdmin && _assignedStationName != null 
+            ? '${_assignedStationName} Dashboard'
+            : 'Admin Dashboard',
+        style: const TextStyle(
           color: Colors.white,
           fontWeight: FontWeight.bold,
         ),
@@ -1081,6 +1208,41 @@ Widget build(BuildContext context) {
       backgroundColor: const Color(0xFF003366),
       elevation: 0,
       actions: [
+        // Add station selector dropdown for super admins
+        if (_isSuperAdmin && _policeStations.isNotEmpty)
+          Padding(
+            padding: const EdgeInsets.only(right: 8.0),
+            child: DropdownButton<String>(
+              dropdownColor: const Color(0xFF003366),
+              underline: Container(),
+              icon: const Icon(Icons.location_on, color: Colors.white),
+              value: _selectedStationId,
+              items: [
+                const DropdownMenuItem<String>(
+                  value: null,
+                  child: Text(
+                    'All Stations',
+                    style: TextStyle(color: Colors.white),
+                  ),
+                ),
+                ..._policeStations.map((station) {
+                  return DropdownMenuItem<String>(
+                    value: station['id'],
+                    child: Text(
+                      station['name'],
+                      style: const TextStyle(color: Colors.white),
+                    ),
+                  );
+                }).toList(),
+              ],
+              onChanged: _onStationChanged,
+              hint: const Text(
+                'Select Station',
+                style: TextStyle(color: Colors.white70),
+              ),
+            ),
+          ),
+          
         // Notification button with badge
         Stack(
           children: [
@@ -1173,139 +1335,164 @@ Widget build(BuildContext context) {
     drawer: _buildAppDrawer(),
   );
 }
-  Widget _buildAppDrawer() {
-    return Drawer(
-      child: ListView(
-        padding: EdgeInsets.zero,
-        children: [
-          DrawerHeader(
-            decoration: const BoxDecoration(
-              color: Color(0xFF003366),
-            ),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                const Text(
-                  'Safety Control Center',
-                  style: TextStyle(
-                    color: Colors.white,
-                    fontSize: 24,
-                    fontWeight: FontWeight.bold,
+Widget _buildAppDrawer() {
+  return Drawer(
+    child: ListView(
+      padding: EdgeInsets.zero,
+      children: [
+        DrawerHeader(
+          decoration: const BoxDecoration(
+            color: Color(0xFF003366),
+          ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text(
+                'Safety Control Center',
+                style: TextStyle(
+                  color: Colors.white,
+                  fontSize: 24,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+              const SizedBox(height: 12),
+              if (_currentUserName != null)
+                Text(
+                  'Welcome, $_currentUserName',
+                  style: const TextStyle(
+                    color: Colors.white70,
+                    fontSize: 16,
                   ),
                 ),
-                const SizedBox(height: 12),
-                if (_currentUserName != null)
-                  Text(
-                    'Welcome, $_currentUserName',
-                    style: const TextStyle(
-                      color: Colors.white70,
-                      fontSize: 16,
+              const SizedBox(height: 12),
+              // Show admin role and station
+              Row(
+                children: [
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                    decoration: BoxDecoration(
+                      color: Colors.red,
+                      borderRadius: BorderRadius.circular(20),
+                    ),
+                    child: Text(
+                      _isSuperAdmin ? 'Super Admin' : 'Station Admin',
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontWeight: FontWeight.bold,
+                      ),
                     ),
                   ),
-                const SizedBox(height: 12),
-                Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-                  decoration: BoxDecoration(
-                    color: Colors.red,
-                    borderRadius: BorderRadius.circular(20),
-                  ),
-                  child: const Text(
-                    'Admin Access',
-                    style: TextStyle(
-                      color: Colors.white,
-                      fontWeight: FontWeight.bold,
+                  const SizedBox(width: 8),
+                  if (_isStationAdmin && _assignedStationName != null)
+                    Expanded(
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                        decoration: BoxDecoration(
+                          color: Colors.blue,
+                          borderRadius: BorderRadius.circular(20),
+                        ),
+                        child: Text(
+                          _assignedStationName!,
+                          style: const TextStyle(
+                            color: Colors.white,
+                            fontWeight: FontWeight.bold,
+                            fontSize: 12,
+                          ),
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ),
                     ),
-                  ),
-                ),
-              ],
-            ),
+                ],
+              ),
+            ],
           ),
-          ListTile(
-            leading: const Icon(Icons.dashboard),
-            title: const Text('Dashboard'),
-            selected: true,
-            selectedTileColor: Colors.blue.shade50,
-            onTap: () {
-              Navigator.pop(context);
-            },
+        ),
+        ListTile(
+          leading: const Icon(Icons.dashboard),
+          title: const Text('Dashboard'),
+          selected: true,
+          selectedTileColor: Colors.blue.shade50,
+          onTap: () {
+            Navigator.pop(context);
+          },
+        ),
+        ListTile(
+          leading: const Icon(Icons.people),
+          title: const Text('User Management'),
+          onTap: () {
+            Navigator.pop(context);
+            Navigator.push(
+              context,
+              MaterialPageRoute(
+                builder: (context) => const UserManagementScreen(),
+              ),
+            ).then((_) {
+              // Refresh dashboard data when returning
+              _fetchDashboardData();
+            });
+          },
+        ),
+        ListTile(
+          leading: const Icon(Icons.assessment),
+          title: const Text('Reports & Analytics'),
+          onTap: () {
+            Navigator.pop(context);
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(
+                content: Text('Reports & Analytics page coming soon'),
+              ),
+            );
+          },
+        ),
+        ListTile(
+          leading: const Icon(Icons.map),
+          title: const Text('District Mapping'),
+          onTap: () {
+            Navigator.pop(context);
+            _exportDistrictActivityMap();
+          },
+        ),
+        const Divider(),
+        ListTile(
+          leading: const Icon(Icons.settings),
+          title: const Text('Settings'),
+          onTap: () {
+            Navigator.pop(context);
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(
+                content: Text('Settings page coming soon'),
+              ),
+            );
+          },
+        ),
+        ListTile(
+          leading: const Icon(Icons.help_outline),
+          title: const Text('Help & Support'),
+          onTap: () {
+            Navigator.pop(context);
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(
+                content: Text('Help & Support page coming soon'),
+              ),
+            );
+          },
+        ),
+        const Divider(),
+        ListTile(
+          leading: const Icon(Icons.logout, color: Colors.red),
+          title: const Text(
+            'Logout',
+            style: TextStyle(color: Colors.red),
           ),
-          ListTile(
-  leading: const Icon(Icons.people),
-  title: const Text('User Management'),
-  onTap: () {
-    Navigator.pop(context);
-    Navigator.push(
-      context,
-      MaterialPageRoute(
-        builder: (context) => const UserManagementScreen(),
-      ),
-    ).then((_) {
-      // Refresh dashboard data when returning
-      _fetchDashboardData();
-    });
-  },
-),
-          ListTile(
-            leading: const Icon(Icons.assessment),
-            title: const Text('Reports & Analytics'),
-            onTap: () {
-              Navigator.pop(context);
-              ScaffoldMessenger.of(context).showSnackBar(
-                const SnackBar(
-                  content: Text('Reports & Analytics page coming soon'),
-                ),
-              );
-            },
-          ),
-          ListTile(
-            leading: const Icon(Icons.map),
-            title: const Text('District Mapping'),
-            onTap: () {
-              Navigator.pop(context);
-              _exportDistrictActivityMap();
-            },
-          ),
-          const Divider(),
-          ListTile(
-            leading: const Icon(Icons.settings),
-            title: const Text('Settings'),
-            onTap: () {
-              Navigator.pop(context);
-              ScaffoldMessenger.of(context).showSnackBar(
-                const SnackBar(
-                  content: Text('Settings page coming soon'),
-                ),
-              );
-            },
-          ),
-          ListTile(
-            leading: const Icon(Icons.help_outline),
-            title: const Text('Help & Support'),
-            onTap: () {
-              Navigator.pop(context);
-              ScaffoldMessenger.of(context).showSnackBar(
-                const SnackBar(
-                  content: Text('Help & Support page coming soon'),
-                ),
-              );
-            },
-          ),
-          const Divider(),
-          ListTile(
-            leading: const Icon(Icons.logout, color: Colors.red),
-            title: const Text(
-              'Logout',
-              style: TextStyle(color: Colors.red),
-            ),
-            onTap: () {
-              Navigator.pop(context);
-              _logout();
-            },
-          ),
-        ],
-      ),
-    );
-  }
+          onTap: () {
+            Navigator.pop(context);
+            _logout();
+          },
+        ),
+      ],
+    ),
+  );
+}
 Widget _buildStatCard(String title, String value, Color valueColor) {
   return Container(
     padding: const EdgeInsets.all(16),
