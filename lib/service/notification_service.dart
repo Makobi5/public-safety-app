@@ -12,6 +12,9 @@ class NotificationService {
   Timer? _notificationTimer;
   DateTime? _lastCheckedTime;
   final Map<String, bool> _processedIncidents = {};
+  Timer? _incidentTimer;
+  
+
 
   // Stream controller for real-time notifications
   final _notificationStreamController = StreamController<NotificationModel>.broadcast();
@@ -53,8 +56,82 @@ class NotificationService {
       rethrow;
     }
   }
+// Add this method to support filtering notifications by station
+Future<List<Map<String, dynamic>>> getNotificationsForStation(String stationId) async {
+  try {
+    final supabase = Supabase.instance.client;
+    final user = supabase.auth.currentUser;
+    
+    if (user != null) {
+      final response = await supabase
+          .from('notifications')
+          .select('*, incidents!inner(*)')
+          .eq('user_id', user.id)
+          .eq('incidents.station_id', stationId)
+          .order('created_at', ascending: false);
+      
+      if (response != null && response is List) {
+        return response.cast<Map<String, dynamic>>();
+      }
+    }
+    
+    return [];
+  } catch (e) {
+    print('Error getting notifications for station: $e');
+    return [];
+  }
+}
 
+// Add this method to determine if a user is a central admin
+Future<bool> isUserCentralAdmin() async {
+  try {
+    final supabase = Supabase.instance.client;
+    final user = supabase.auth.currentUser;
+    
+    if (user == null) return false;
+    
+    final response = await supabase
+        .from('admin_tb')
+        .select('police_station_name')
+        .eq('user_id', user.id)
+        .single();
+    
+    if (response != null) {
+      final stationName = response['police_station_name'] as String?;
+      return stationName == 'Kabale Central Police Station';
+    }
+    
+    return false;
+  } catch (e) {
+    print('Error checking if user is central admin: $e');
+    return false;
+  }
+}
 
+// Add this method to get a user's assigned station ID
+Future<String?> getUserStationId() async {
+  try {
+    final supabase = Supabase.instance.client;
+    final user = supabase.auth.currentUser;
+    
+    if (user == null) return null;
+    
+    final response = await supabase
+        .from('admin_tb')
+        .select('station_id')
+        .eq('user_id', user.id)
+        .single();
+    
+    if (response != null) {
+      return response['station_id'] as String?;
+    }
+    
+    return null;
+  } catch (e) {
+    print('Error getting user station ID: $e');
+    return null;
+  }
+}
 
   // Get user notifications
   Future<List<NotificationModel>> getUserNotifications(String userId) async {
@@ -77,36 +154,32 @@ class NotificationService {
     }
   }
   Future<void> loadProcessedIncidentsState() async {
-  try {
-    final prefs = await SharedPreferences.getInstance();
-    final String? storedData = prefs.getString('processed_incidents');
-    if (storedData != null) {
-      final Map<String, dynamic> decoded = jsonDecode(storedData);
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final processed = prefs.getString('processed_incidents');
+      if (processed != null) {
+        _processedIncidents.clear();
+        final decoded = jsonDecode(processed) as Map<String, dynamic>;
+        decoded.forEach((key, value) {
+          _processedIncidents[key] = value as bool;
+        });
+        print('Loaded ${_processedIncidents.length} processed incidents.');
+      }
+    } catch (e) {
+      print('Error loading processed incidents state: $e');
       _processedIncidents.clear();
-      decoded.forEach((key, value) {
-        _processedIncidents[key] = value;
-      });
-      print('Loaded ${_processedIncidents.length} processed incidents from storage');
     }
-  } catch (e) {
-    print('Error loading processed incidents state: $e');
   }
-}
 
-Future<void> saveProcessedIncidentsState() async {
-  try {
-    final prefs = await SharedPreferences.getInstance();
-    // Convert _processedIncidents to a simple Map<String, dynamic> for storage
-    final Map<String, dynamic> storableMap = {};
-    _processedIncidents.forEach((key, value) {
-      storableMap[key] = value;
-    });
-    await prefs.setString('processed_incidents', jsonEncode(storableMap));
-    print('Saved ${_processedIncidents.length} processed incidents to storage');
-  } catch (e) {
-    print('Error saving processed incidents state: $e');
+  Future<void> saveProcessedIncidentsState() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString('processed_incidents', jsonEncode(_processedIncidents));
+      print('Saved processed incidents state.');
+    } catch (e) {
+      print('Error saving processed incidents state: $e');
+    }
   }
-}
 
   // Mark notification as read
   Future<void> markAsRead(String notificationId) async {
@@ -262,47 +335,73 @@ Future<List<Map<String, dynamic>>> checkForNewIncidents() async {
   }
 }
 
-  // Start real-time incident monitoring
-  void startIncidentMonitoring({
-    Duration interval = const Duration(seconds: 15),
+ void startIncidentMonitoring({
+    required Duration interval,
     required Function(List<Map<String, dynamic>>) onNewIncidents,
+    String? stationId,
   }) {
-    // Initialize last checked time if not already set
-    _lastCheckedTime ??= DateTime.now();
+    // Cancel any existing timer
+    stopIncidentMonitoring();
     
-    _notificationTimer = Timer.periodic(interval, (_) async {
+    // Store the last check time
+    DateTime lastCheckTime = DateTime.now();
+    
+    // Start periodic timer
+    _incidentTimer = Timer.periodic(interval, (timer) async {
       try {
-        final newIncidents = await checkForNewIncidents();
-        if (newIncidents.isNotEmpty) {
+        final supabase = Supabase.instance.client;
+        
+        // Create a base query
+        var query = supabase
+            .from('incidents')
+            .select()
+            .gt('created_at', lastCheckTime.toIso8601String());
+        
+        // Add station filter if provided
+        if (stationId != null) {
+          query = query.eq('station_id', stationId as Object);
+        }
+        
+        // Execute the query
+        final response = await query.order('created_at', ascending: false);
+        
+        // Update last check time
+        lastCheckTime = DateTime.now();
+        
+        if (response != null && response is List && response.isNotEmpty) {
+          final newIncidents = response.cast<Map<String, dynamic>>();
+          print('Found ${newIncidents.length} new incidents');
+          
+          // Call the callback with new incidents
           onNewIncidents(newIncidents);
         }
       } catch (e) {
-        print('Error monitoring for incidents: $e');
+        print('Error monitoring for new incidents: $e');
       }
     });
   }
-
-  void stopIncidentMonitoring() {
-    _notificationTimer?.cancel();
-    _notificationTimer = null;
-  }
   
-  // Check if an incident has been processed
+  void stopIncidentMonitoring() {
+    _incidentTimer?.cancel();
+    _incidentTimer = null;
+  }
+
+  
   bool isIncidentProcessed(String incidentId) {
     return _processedIncidents.containsKey(incidentId) && _processedIncidents[incidentId] == true;
   }
-  
-// Manually mark an incident as processed
-void markIncidentAsProcessed(String incidentId) {
-  _processedIncidents[incidentId] = true;
-  saveProcessedIncidentsState(); // Save after updating
-}
+ void markIncidentAsProcessed(String incidentId) {
+    _processedIncidents[incidentId] = true;
+    saveProcessedIncidentsState(); // Save after updating
+  }
   
   // Reset tracking for an incident (useful for testing)
 void resetIncidentTracking(String incidentId) {
   _processedIncidents.remove(incidentId);
   saveProcessedIncidentsState();
 }
+
+
   
   // Reset all incident tracking
  void resetAllIncidentTracking() {

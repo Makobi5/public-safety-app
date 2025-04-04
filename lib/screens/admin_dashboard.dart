@@ -36,6 +36,9 @@ class _AdminDashboardState extends State<AdminDashboard> {
   final _lastNameController = TextEditingController();
   final _searchController = TextEditingController();
   // Add this field in your _AdminDashboardState class
+  bool _isCentralAdmin = false;
+  String? _currentUserStationId;
+  String? _currentPoliceStationName;
 final NotificationService _notificationService = NotificationService();
   
   bool _isLoading = false;
@@ -62,45 +65,89 @@ DateTime? lastFetchTime;
   List<Map<String, dynamic>> recentActivities = [];
   List<Map<String, dynamic>> filteredReports = [];
   
-  @override
+ @override
 void initState() {
   super.initState();
-  _fetchDashboardData();
-  _getCurrentUser();
-   _setupNotificationListener();
-     _loadNotificationsState(); 
   
-  // Add this to set up a timer to check for new reports periodically
-// Initialize notification service - will start listening in initState
-
+  // Get current user first, then initialize other components
+  _getCurrentUser().then((_) {
+    // After getting user info, fetch dashboard data
+    _fetchDashboardData();
+    
+    // Set up notification listener with station filtering if not central admin
+    if (!_isCentralAdmin && _currentUserStationId != null) {
+      _notificationService.startIncidentMonitoring(
+        interval: const Duration(seconds: 15),
+        onNewIncidents: (newIncidents) {
+          if (newIncidents.isNotEmpty) {
+            _processNewIncidents(newIncidents);
+          }
+        },
+        stationId: _currentUserStationId, // Filter notifications by station
+      );
+    } else {
+      // Central admin gets all notifications
+      _setupNotificationListener();
+    }
+    
+    // Load stored notifications
+    _loadNotificationsState();
+  });
 }
-  // Get current user's name for display
-  Future<void> _getCurrentUser() async {
-    try {
-      final supabase = Supabase.instance.client;
-      final user = supabase.auth.currentUser;
-      
-      if (user != null) {
-        // Get user profile data
-        // Get user profile data
-final response = await supabase
-    .from('user_profiles')  // Changed from 'profiles' to 'user_profiles'
-    .select('first_name, last_name')
-    .eq('user_id', user.id)  // Changed from 'id' to 'user_id'
-    .single();
-            
-        if (response != null) {
-          final firstName = response['first_name'] as String? ?? '';
-          final lastName = response['last_name'] as String? ?? '';
+Future<void> _getCurrentUser() async {
+  try {
+    final supabase = Supabase.instance.client;
+    final user = supabase.auth.currentUser;
+    
+    if (user != null) {
+      // First, get the admin details including their assigned station
+      final adminResponse = await supabase
+          .from('admins')
+          .select('id, role')
+          .eq('user_id', user.id)
+          .single();
+          
+      if (adminResponse != null) {
+        final adminId = adminResponse['id'];
+        
+        // Get the admin's station assignment
+        final stationAssignmentResponse = await supabase
+          .from('admin_station_assignments')
+          .select('station_id, police_stations!inner(id, name, district_id)')
+          .eq('admin_id', adminId)
+          .single();
+        
+        // Then get user profile data
+        final userProfileResponse = await supabase
+            .from('user_profiles')  // Assuming this table exists for user details
+            .select('first_name, last_name')
+            .eq('user_id', user.id)
+            .single();
+        
+        if (userProfileResponse != null && stationAssignmentResponse != null) {
+          final firstName = userProfileResponse['first_name'] as String? ?? '';
+          final lastName = userProfileResponse['last_name'] as String? ?? '';
+          
+          // Get the station details
+          final stationId = stationAssignmentResponse['station_id'] as String?;
+          final policeStationName = stationAssignmentResponse['police_stations']['name'] as String?;
+          
+          // Check if this is a central admin (Kabale Central Police Station)
+          final isCentralAdmin = policeStationName == 'Kabale Central Police Station';
+          
           setState(() {
             _currentUserName = '$firstName $lastName';
+            _currentUserStationId = stationId;
+            _currentPoliceStationName = policeStationName;
+            _isCentralAdmin = isCentralAdmin;
           });
         }
       }
-    } catch (e) {
-      print('Error getting current user: $e');
     }
+  } catch (e) {
+    print('Error getting current user: $e');
   }
+}
   // Add after _getCurrentUser method
 
   // Show notifications dialog
@@ -289,13 +336,22 @@ Future<void> _loadNotificationsState() async {
   }
 }
 
+// Modify _setupNotificationListener to filter by station
 void _setupNotificationListener() {
   // Start monitoring for new incidents
   _notificationService.startIncidentMonitoring(
     interval: const Duration(seconds: 15), // Check every 15 seconds
     onNewIncidents: (newIncidents) {
       if (newIncidents.isNotEmpty) {
-        _processNewIncidents(newIncidents);
+        // Filter incidents if not central admin
+        final filteredIncidents = _isCentralAdmin 
+            ? newIncidents 
+            : newIncidents.where((incident) => 
+                incident['station_id'] == _currentUserStationId).toList();
+                
+        if (filteredIncidents.isNotEmpty) {
+          _processNewIncidents(filteredIncidents);
+        }
       }
     },
   );
@@ -558,7 +614,6 @@ void dispose() {
   super.dispose();
 }
 
-// Update this part in your _fetchDashboardData method
 Future<void> _fetchDashboardData() async {
   setState(() {
     _isLoading = true;
@@ -574,11 +629,32 @@ Future<void> _fetchDashboardData() async {
   try {
     final supabase = Supabase.instance.client;
     
-    // IMPORTANT FIX: Modify how we fetch incident data
+    // If not central admin, filter incidents by station
+    var incidentQuery = supabase.from('incidents').select();
+
+    if (!_isCentralAdmin && _currentUserStationId != null) {
+      // Only show incidents for this admin's police station
+      // Cast _currentUserStationId to Object explicitly
+      incidentQuery = incidentQuery.eq('station_id', _currentUserStationId as Object);
+    }
+
+    // Order by creation date - don't reassign, create a new variable
+    final orderedIncidentQuery = incidentQuery.order('created_at', ascending: false);
+    
+    // Get responded incidents count (with status not 'Pending')
+    var respondedQuery = supabase.from('incidents').select('id');
+    
+    if (!_isCentralAdmin && _currentUserStationId != null) {
+      // Only count incidents for this admin's police station
+      respondedQuery = respondedQuery.eq('station_id', _currentUserStationId as Object);
+    }
+    
+    // Apply the 'not' filter and don't reassign
+    final filteredRespondedQuery = respondedQuery.not('status', 'eq', 'Pending');
+    
     final responses = await Future.wait([
-      supabase.from('incidents').select().order('created_at', ascending: false),
-      // This query might be missing some "pending" cases if they have null status
-      supabase.from('incidents').select('id').not('status', 'eq', 'Pending'),
+      orderedIncidentQuery,
+      filteredRespondedQuery,
     ]);
 
     if (responses[0] != null && responses[0] is List) {
@@ -616,6 +692,7 @@ Future<void> _fetchDashboardData() async {
           'time': '${createdAt.hour.toString().padLeft(2, '0')}:${createdAt.minute.toString().padLeft(2, '0')}',
           'priority': _notificationService.getIncidentPriority(incident['incident_type']),
           'status': incident['status'] ?? 'Pending', // Explicitly set to 'Pending' if null
+          'station_id': incident['station_id'],
         };
       }).toList();
       
@@ -673,28 +750,35 @@ Future<void> _refreshDashboard() async {
   await _fetchDashboardData();
 }
   
-  // Fetch recent activities for the dashboard
-  Future<void> _fetchRecentActivity() async {
-    try {
-      // Get Supabase client
-      final supabase = Supabase.instance.client;
-      
-      // Fetch recent activity from incident_activity table
-      final response = await supabase
-          .from('incident_activity')
-          .select('*, incidents!inner(incident_type)')
-          .order('created_at', ascending: false)
-          .limit(5);
-      
-      if (response != null && response is List) {
-        // Process data for activity log display
-        recentActivities = response.cast<Map<String, dynamic>>();
-        print('Recent activity fetched: ${recentActivities.length} entries');
-      }
-    } catch (e) {
-      print('Error fetching recent activity: $e');
+// Modify the _fetchRecentActivity method to filter by station
+Future<void> _fetchRecentActivity() async {
+  try {
+    // Get Supabase client
+    final supabase = Supabase.instance.client;
+    
+    // Base query
+    var activityQuery = supabase
+        .from('incident_activity')
+        .select('*, incidents!inner(incident_type, station_id)');
+    
+    // If not central admin, filter activities by station
+    if (!_isCentralAdmin && _currentUserStationId != null) {
+      activityQuery = activityQuery.eq('incidents.station_id', _currentUserStationId as Object);
     }
+    
+    // Complete the query - don't reassign
+    final response = await activityQuery.order('created_at', ascending: false)
+        .limit(5);
+    
+    if (response != null && response is List) {
+      // Process data for activity log display
+      recentActivities = response.cast<Map<String, dynamic>>();
+      print('Recent activity fetched: ${recentActivities.length} entries');
+    }
+  } catch (e) {
+    print('Error fetching recent activity: $e');
   }
+}
   
   // Determine incident priority based on type
   String _getIncidentPriority(String? incidentType) {
@@ -1071,12 +1155,26 @@ void _showQuickAlertDialog() {
 Widget build(BuildContext context) {
   return Scaffold(
     appBar: AppBar(
-      title: const Text(
-        'Admin Dashboard',
-        style: TextStyle(
-          color: Colors.white,
-          fontWeight: FontWeight.bold,
-        ),
+      title: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          const Text(
+            'Admin Dashboard',
+            style: TextStyle(
+              color: Colors.white,
+              fontWeight: FontWeight.bold,
+            ),
+          ),
+          if (!_isCentralAdmin && _currentPoliceStationName != null)
+            Text(
+              _currentPoliceStationName!,
+              style: const TextStyle(
+                color: Colors.white70,
+                fontSize: 12,
+              ),
+            ),
+        ],
       ),
       backgroundColor: const Color(0xFF003366),
       elevation: 0,
@@ -1173,139 +1271,149 @@ Widget build(BuildContext context) {
     drawer: _buildAppDrawer(),
   );
 }
-  Widget _buildAppDrawer() {
-    return Drawer(
-      child: ListView(
-        padding: EdgeInsets.zero,
-        children: [
-          DrawerHeader(
-            decoration: const BoxDecoration(
-              color: Color(0xFF003366),
-            ),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                const Text(
-                  'Safety Control Center',
-                  style: TextStyle(
+Widget _buildAppDrawer() {
+  return Drawer(
+    child: ListView(
+      padding: EdgeInsets.zero,
+      children: [
+        DrawerHeader(
+          decoration: const BoxDecoration(
+            color: Color(0xFF003366),
+          ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text(
+                'Safety Control Center',
+                style: TextStyle(
+                  color: Colors.white,
+                  fontSize: 24,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+              const SizedBox(height: 12),
+              if (_currentUserName != null)
+                Text(
+                  'Welcome, $_currentUserName',
+                  style: const TextStyle(
+                    color: Colors.white70,
+                    fontSize: 16,
+                  ),
+                ),
+              const SizedBox(height: 8),
+              if (_currentPoliceStationName != null)
+                Text(
+                  _currentPoliceStationName!,
+                  style: const TextStyle(
+                    color: Colors.white70,
+                    fontSize: 14,
+                    fontStyle: FontStyle.italic,
+                  ),
+                ),
+              const SizedBox(height: 8),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                decoration: BoxDecoration(
+                  color: _isCentralAdmin ? Colors.red : Colors.orange,
+                  borderRadius: BorderRadius.circular(20),
+                ),
+                child: Text(
+                  _isCentralAdmin ? 'Central Admin' : 'Station Admin',
+                  style: const TextStyle(
                     color: Colors.white,
-                    fontSize: 24,
                     fontWeight: FontWeight.bold,
                   ),
                 ),
-                const SizedBox(height: 12),
-                if (_currentUserName != null)
-                  Text(
-                    'Welcome, $_currentUserName',
-                    style: const TextStyle(
-                      color: Colors.white70,
-                      fontSize: 16,
-                    ),
-                  ),
-                const SizedBox(height: 12),
-                Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-                  decoration: BoxDecoration(
-                    color: Colors.red,
-                    borderRadius: BorderRadius.circular(20),
-                  ),
-                  child: const Text(
-                    'Admin Access',
-                    style: TextStyle(
-                      color: Colors.white,
-                      fontWeight: FontWeight.bold,
-                    ),
-                  ),
-                ),
-              ],
-            ),
+              ),
+            ],
           ),
-          ListTile(
-            leading: const Icon(Icons.dashboard),
-            title: const Text('Dashboard'),
-            selected: true,
-            selectedTileColor: Colors.blue.shade50,
-            onTap: () {
-              Navigator.pop(context);
-            },
+        ),
+        ListTile(
+          leading: const Icon(Icons.dashboard),
+          title: const Text('Dashboard'),
+          selected: true,
+          selectedTileColor: Colors.blue.shade50,
+          onTap: () {
+            Navigator.pop(context);
+          },
+        ),
+        ListTile(
+          leading: const Icon(Icons.people),
+          title: const Text('User Management'),
+          onTap: () {
+            Navigator.pop(context);
+            Navigator.push(
+              context,
+              MaterialPageRoute(
+                builder: (context) => const UserManagementScreen(),
+              ),
+            ).then((_) {
+              // Refresh dashboard data when returning
+              _fetchDashboardData();
+            });
+          },
+        ),
+        ListTile(
+          leading: const Icon(Icons.assessment),
+          title: const Text('Reports & Analytics'),
+          onTap: () {
+            Navigator.pop(context);
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(
+                content: Text('Reports & Analytics page coming soon'),
+              ),
+            );
+          },
+        ),
+        ListTile(
+          leading: const Icon(Icons.map),
+          title: const Text('District Mapping'),
+          onTap: () {
+            Navigator.pop(context);
+            _exportDistrictActivityMap();
+          },
+        ),
+        const Divider(),
+        ListTile(
+          leading: const Icon(Icons.settings),
+          title: const Text('Settings'),
+          onTap: () {
+            Navigator.pop(context);
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(
+                content: Text('Settings page coming soon'),
+              ),
+            );
+          },
+        ),
+        ListTile(
+          leading: const Icon(Icons.help_outline),
+          title: const Text('Help & Support'),
+          onTap: () {
+            Navigator.pop(context);
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(
+                content: Text('Help & Support page coming soon'),
+              ),
+            );
+          },
+        ),
+        const Divider(),
+        ListTile(
+          leading: const Icon(Icons.logout, color: Colors.red),
+          title: const Text(
+            'Logout',
+            style: TextStyle(color: Colors.red),
           ),
-          ListTile(
-  leading: const Icon(Icons.people),
-  title: const Text('User Management'),
-  onTap: () {
-    Navigator.pop(context);
-    Navigator.push(
-      context,
-      MaterialPageRoute(
-        builder: (context) => const UserManagementScreen(),
-      ),
-    ).then((_) {
-      // Refresh dashboard data when returning
-      _fetchDashboardData();
-    });
-  },
-),
-          ListTile(
-            leading: const Icon(Icons.assessment),
-            title: const Text('Reports & Analytics'),
-            onTap: () {
-              Navigator.pop(context);
-              ScaffoldMessenger.of(context).showSnackBar(
-                const SnackBar(
-                  content: Text('Reports & Analytics page coming soon'),
-                ),
-              );
-            },
-          ),
-          ListTile(
-            leading: const Icon(Icons.map),
-            title: const Text('District Mapping'),
-            onTap: () {
-              Navigator.pop(context);
-              _exportDistrictActivityMap();
-            },
-          ),
-          const Divider(),
-          ListTile(
-            leading: const Icon(Icons.settings),
-            title: const Text('Settings'),
-            onTap: () {
-              Navigator.pop(context);
-              ScaffoldMessenger.of(context).showSnackBar(
-                const SnackBar(
-                  content: Text('Settings page coming soon'),
-                ),
-              );
-            },
-          ),
-          ListTile(
-            leading: const Icon(Icons.help_outline),
-            title: const Text('Help & Support'),
-            onTap: () {
-              Navigator.pop(context);
-              ScaffoldMessenger.of(context).showSnackBar(
-                const SnackBar(
-                  content: Text('Help & Support page coming soon'),
-                ),
-              );
-            },
-          ),
-          const Divider(),
-          ListTile(
-            leading: const Icon(Icons.logout, color: Colors.red),
-            title: const Text(
-              'Logout',
-              style: TextStyle(color: Colors.red),
-            ),
-            onTap: () {
-              Navigator.pop(context);
-              _logout();
-            },
-          ),
-        ],
-      ),
-    );
-  }
+          onTap: () {
+            Navigator.pop(context);
+            _logout();
+          },
+        ),
+      ],
+    ),
+  );
+}
 Widget _buildStatCard(String title, String value, Color valueColor) {
   return Container(
     padding: const EdgeInsets.all(16),
@@ -1374,6 +1482,27 @@ Widget _buildDashboard() {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
+                // Station indicator banner for non-central admins
+                if (!_isCentralAdmin && _currentPoliceStationName != null)
+                  Container(
+                    width: double.infinity,
+                    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                    color: Colors.orange.shade100,
+                    child: Row(
+                      children: [
+                        Icon(Icons.location_on, color: Colors.orange.shade800, size: 16),
+                        const SizedBox(width: 8),
+                        Text(
+                          'Viewing reports for: $_currentPoliceStationName',
+                          style: TextStyle(
+                            color: Colors.orange.shade800,
+                            fontWeight: FontWeight.w500,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                
                 // Emergency Level Header
                 Container(
                   padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 16),
@@ -1420,7 +1549,7 @@ Widget _buildDashboard() {
                       ),
                       const SizedBox(width: 16),
                       ElevatedButton(
-                        onPressed: _showQuickAlertDialog,
+                        onPressed: _isCentralAdmin ? _showQuickAlertDialog : null, // Only central admin can send alerts
                         style: ElevatedButton.styleFrom(
                           backgroundColor: Colors.red,
                           shape: RoundedRectangleBorder(
@@ -1434,7 +1563,7 @@ Widget _buildDashboard() {
                   ),
                 ),
 
-                // Dashboard Content
+                // Rest of the dashboard content remains the same
                 Expanded(
                   child: SingleChildScrollView(
                     physics: const AlwaysScrollableScrollPhysics(),
@@ -1453,7 +1582,8 @@ Widget _buildDashboard() {
                             ),
                           ),
                         ),
-
+                        
+                        // Rest of the existing content...
                         Row(
                           children: [
                             Expanded(

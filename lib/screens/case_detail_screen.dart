@@ -14,6 +14,8 @@ import 'package:chewie/chewie.dart';
 import 'package:audio_waveforms/audio_waveforms.dart';
 import 'package:flick_video_player/flick_video_player.dart';
 import 'package:visibility_detector/visibility_detector.dart';
+import '../service/access_control_service.dart';
+
 
 class CaseDetailScreen extends StatefulWidget {
   final String incidentId;
@@ -50,6 +52,9 @@ class _CaseDetailScreenState extends State<CaseDetailScreen> {
   bool _isVideoLoading = false;
   Map<String, FlickManager> _flickManagers = {};
   bool _videoInitialized = false;
+final AccessControlService _accessControlService = AccessControlService();
+bool _hasAccess = false;
+bool _checkingAccess = true;
 
   // Status options for dropdown
   final List<String> _statusOptions = [
@@ -94,6 +99,7 @@ class _CaseDetailScreenState extends State<CaseDetailScreen> {
 @override
 void initState() {
   super.initState();
+    _checkAccess();
   WidgetsBinding.instance.addPostFrameCallback((_) async {
     try {
       await _fetchCaseDetails();
@@ -121,6 +127,41 @@ void initState() {
   });
 }
 
+Future<void> _checkAccess() async {
+  setState(() {
+    _checkingAccess = true;
+  });
+  
+  final hasAccess = await _accessControlService.canAccessIncident(widget.incidentId);
+  
+  setState(() {
+    _hasAccess = hasAccess;
+    _checkingAccess = false;
+  });
+  
+  if (!_hasAccess) {
+    // Show access denied message and navigate back
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Access denied: You do not have permission to view this case.'),
+          backgroundColor: Colors.red,
+          duration: Duration(seconds: 3),
+        ),
+      );
+      
+      // Delay navigation to allow the snackbar to be seen
+      Future.delayed(const Duration(seconds: 3), () {
+        if (mounted) {
+          Navigator.of(context).pop();
+        }
+      });
+    }
+  } else {
+    // If has access, proceed with fetching case details
+    _fetchCaseDetails();
+  }
+}
 
 void _showMediaDialog(Map<String, dynamic> file) {
   showDialog(
@@ -1270,94 +1311,129 @@ Widget build(BuildContext context) {
         ),
       ],
     ),
-    body: _isLoading
+    body: _checkingAccess
         ? const Center(
-            child: CircularProgressIndicator(
-            color: Color(0xFF003366),
-          ))
-        : _incidentData == null
-            ? Center(
-                child: Text(
-                  _errorMessage ?? 'Case not found',
-                  style: const TextStyle(color: Colors.red),
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                CircularProgressIndicator(
+                  color: Color(0xFF003366),
                 ),
-              )
-            : SingleChildScrollView(
+                SizedBox(height: 16),
+                Text('Checking access permissions...'),
+              ],
+            ),
+          )
+        : !_hasAccess
+            ? const Center(
                 child: Column(
+                  mainAxisAlignment: MainAxisAlignment.center,
                   children: [
-                    // Case Header
-                    Container(
-                      width: double.infinity,
-                      padding: const EdgeInsets.all(16),
-                      color: const Color(0xFF003366),
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Row(
-                            children: [
-                              Expanded(
-                                child: Text(
-                                  _incidentData!['incident_type'] ??
-                                      'Unknown Incident',
-                                  style: const TextStyle(
-                                    color: Colors.white,
-                                    fontSize: 22,
-                                    fontWeight: FontWeight.bold,
-                                  ),
-                                ),
-                              ),
-                              Container(
-                                padding: const EdgeInsets.symmetric(
-                                    horizontal: 12, vertical: 6),
-                                decoration: BoxDecoration(
-                                  color: Colors.white.withOpacity(0.2),
-                                  borderRadius: BorderRadius.circular(20),
-                                ),
-                                child: Text(
-                                  'ID: ${widget.incidentId.substring(0, widget.incidentId.length > 8 ? 8 : widget.incidentId.length)}',
-                                  style: const TextStyle(
-                                    color: Colors.white,
-                                    fontWeight: FontWeight.bold,
-                                  ),
-                                ),
-                              ),
-                            ],
-                          ),
-                          const SizedBox(height: 10),
-                          Row(
-                            children: [
-                              const Icon(
-                                Icons.location_on,
-                                color: Colors.white70,
-                                size: 16,
-                              ),
-                              const SizedBox(width: 4),
-                              Text(
-                                _getLocationSummary(),
-                                style: const TextStyle(
-                                  color: Colors.white70,
-                                ),
-                              ),
-                              const SizedBox(width: 16),
-                              const Icon(
-                                Icons.calendar_today,
-                                color: Colors.white70,
-                                size: 16,
-                              ),
-                              const SizedBox(width: 4),
-                              Text(
-                                DateTime.parse(_incidentData!['created_at'])
-                                    .toString()
-                                    .substring(0, 16),
-                                style: const TextStyle(
-                                  color: Colors.white70,
-                                ),
-                              ),
-                            ],
-                          ),
-                        ],
+                    Icon(Icons.lock, size: 64, color: Colors.red),
+                    SizedBox(height: 16),
+                    Text(
+                      'Access Denied',
+                      style: TextStyle(
+                        fontSize: 24,
+                        fontWeight: FontWeight.bold,
                       ),
                     ),
+                    SizedBox(height: 8),
+                    Text(
+                      'You do not have permission to view this case.',
+                      textAlign: TextAlign.center,
+                    ),
+                  ],
+                ),
+              )
+            : _isLoading
+                ? const Center(
+                    child: CircularProgressIndicator(
+                    color: Color(0xFF003366),
+                  ))
+                : _incidentData == null
+                    ? Center(
+                        child: Text(
+                          _errorMessage ?? 'Case not found',
+                          style: const TextStyle(color: Colors.red),
+                        ),
+                      )
+                    : SingleChildScrollView(
+                        child: Column(
+                          children: [
+                            // Case Header
+                            Container(
+                              width: double.infinity,
+                              padding: const EdgeInsets.all(16),
+                              color: const Color(0xFF003366),
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Row(
+                                    children: [
+                                      Expanded(
+                                        child: Text(
+                                          _incidentData!['incident_type'] ??
+                                              'Unknown Incident',
+                                          style: const TextStyle(
+                                            color: Colors.white,
+                                            fontSize: 22,
+                                            fontWeight: FontWeight.bold,
+                                          ),
+                                        ),
+                                      ),
+                                      Container(
+                                        padding: const EdgeInsets.symmetric(
+                                            horizontal: 12, vertical: 6),
+                                        decoration: BoxDecoration(
+                                          color: Colors.white.withOpacity(0.2),
+                                          borderRadius: BorderRadius.circular(20),
+                                        ),
+                                        child: Text(
+                                          'ID: ${widget.incidentId.substring(0, widget.incidentId.length > 8 ? 8 : widget.incidentId.length)}',
+                                          style: const TextStyle(
+                                            color: Colors.white,
+                                            fontWeight: FontWeight.bold,
+                                          ),
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                  const SizedBox(height: 10),
+                                  Row(
+                                    children: [
+                                      const Icon(
+                                        Icons.location_on,
+                                        color: Colors.white70,
+                                        size: 16,
+                                      ),
+                                      const SizedBox(width: 4),
+                                      Text(
+                                        _getLocationSummary(),
+                                        style: const TextStyle(
+                                          color: Colors.white70,
+                                        ),
+                                      ),
+                                      const SizedBox(width: 16),
+                                      const Icon(
+                                        Icons.calendar_today,
+                                        color: Colors.white70,
+                                        size: 16,
+                                      ),
+                                      const SizedBox(width: 4),
+                                      Text(
+                                        DateTime.parse(_incidentData!['created_at'])
+                                            .toString()
+                                            .substring(0, 16),
+                                        style: const TextStyle(
+                                          color: Colors.white70,
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                ],
+                              ),
+                            ),
 
                     // Status and Action Buttons
                     Container(

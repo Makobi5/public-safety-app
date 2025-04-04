@@ -53,52 +53,58 @@ class _UserNotificationsState extends State<UserNotifications> {
     }
   }
 
-  void _subscribeToNotifications() {
-    try {
-      final supabase = Supabase.instance.client;
-      final userId = supabase.auth.currentUser!.id;
-
-_notificationService.startIncidentMonitoring(
-  onNewIncidents: (incidents) async {
+void _subscribeToNotifications() {
+  try {
     final supabase = Supabase.instance.client;
-    final userId = supabase.auth.currentUser!.id;
-    
-    for (final incident in incidents) {
-      // Create notification model from incident data
-      final notification = NotificationModel(
-        id: DateTime.now().millisecondsSinceEpoch.toString(),
-        userId: userId,
-        title: 'New Incident: ${incident['incident_type'] ?? 'Unknown'}',
-        message: incident['description'] ?? 'No description provided',
-        isRead: false,
-        createdAt: DateTime.now(),
-        priority: _notificationService.getIncidentPriority(incident['incident_type']),
-        incidentId: incident['id'].toString(),
-      );
-      
-      setState(() {
-        _notifications.insert(0, notification);
-      });
-      
-      // Show a snackbar for new notification
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(notification.title),
-          action: SnackBarAction(
-            label: 'View',
-            onPressed: () {
-              _showNotificationDetails(notification);
-            },
-          ),
-        ),
-      );
-    }
-  },
-);
-    } catch (e) {
-      print('Error subscribing to notifications: $e');
-    }
+    final userId = supabase.auth.currentUser?.id;
+
+    if (userId == null) return;
+
+    NotificationService().startIncidentMonitoring(
+      interval: const Duration(minutes: 1), // Added required interval parameter
+      onNewIncidents: (incidents) async {
+        for (final incident in incidents) {
+          // Create notification model from incident data
+          final notification = NotificationModel(
+            id: DateTime.now().millisecondsSinceEpoch.toString(),
+            userId: userId,
+            title: 'New Incident: ${incident['incident_type'] ?? 'Unknown'}',
+            message: incident['description'] ?? 'No description provided',
+            isRead: false,
+            createdAt: DateTime.now(),
+            priority: NotificationService().getIncidentPriority(incident['incident_type']),
+            incidentId: incident['id'].toString(),
+          );
+          
+          // Make sure this is in a StatefulWidget's context
+          if (mounted) {
+            setState(() {
+              _notifications.insert(0, notification);
+            });
+          }
+
+          // Show a snackbar for new notification
+          if (context.mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(
+                content: Text(notification.title),
+                action: SnackBarAction(
+                  label: 'View',
+                  onPressed: () {
+                    _showNotificationDetails(notification);
+                  },
+                ),
+              ),
+            );
+          }
+        }
+      },
+      stationId: null, // Optional: add station ID if needed
+    );
+  } catch (e) {
+    print('Error subscribing to notifications: $e');
   }
+}
 
   void _showNotificationDetails(NotificationModel notification) {
     showDialog(
