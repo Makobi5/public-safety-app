@@ -192,7 +192,9 @@ Future<void> _fetchUsers() async {
     print('User: ${user['first_name']} ${user['last_name']}, Role: "${user['role']}"');
   }
 }
-  Future<void> _deleteUser(String userId) async {
+// Update this method in your _UserManagementScreenState class
+
+Future<void> _deleteUser(String userId) async {
   setState(() {
     _isLoading = true;
   });
@@ -200,7 +202,35 @@ Future<void> _fetchUsers() async {
   try {
     final supabase = Supabase.instance.client;
     
-    // Call the secure function to delete the user
+    // Step 1: Find the admin record for this user
+    final adminResponse = await supabase
+        .from('admins')
+        .select('id')
+        .eq('user_id', userId)
+        .limit(1);
+    
+    // Check if user is an admin
+    if (adminResponse != null && adminResponse is List && adminResponse.isNotEmpty) {
+      final adminId = adminResponse[0]['id'];
+      print('Found admin ID: $adminId for user ID: $userId');
+      
+      // Step 2: Delete any station assignments for this admin
+      print('Deleting station assignments for admin ID: $adminId');
+      await supabase
+          .from('admin_station_assignments')
+          .delete()
+          .eq('admin_id', adminId);
+          
+      // Step 3: Delete the admin record
+      print('Deleting admin record for admin ID: $adminId');
+      await supabase
+          .from('admins')
+          .delete()
+          .eq('id', adminId);
+    }
+    
+    // Step 4: Now it's safe to call the secure function to delete the user
+    print('Calling force_delete_user for user ID: $userId');
     final result = await supabase.rpc(
       'force_delete_user',
       params: {

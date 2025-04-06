@@ -217,91 +217,74 @@ class AuthService {
   }
   
   // New method: Create Admin Account (can only be used by existing admins)
-  static Future<AuthResponse> createAdminAccount({
-    required String email,
-    required String password,
-    required Map<String, dynamic> userData,
-  }) async {
-    // Verify that the current user is an admin
-    if (!await isUserAdmin()) {
-      throw const AuthException(
-        'Not authorized: Only existing admins can create admin accounts.',
-      );
-    }
-    
-    try {
-      // Check if user already exists
-      final existingUser = await supabase.auth.admin
-        .getUserByEmail(email);
-        
-      String userId;
-      
-      if (existingUser != null) {
-        // User already exists
-        userId = existingUser.id;
-        print("User already exists with ID: $userId");
-      } else {
-        // Create a new user
-        final signUpResponse = await supabase.auth.signUp(
-          email: email,
-          password: password,
-          data: userData,
-        );
-        
-        if (signUpResponse.user == null) {
-          throw Exception("Failed to create user account");
-        }
-        
-        userId = signUpResponse.user!.id;
-        print("Created new user with ID: $userId");
-        
-        // Create user profile
-        await _createUserProfile(userId, userData);
-      }
-      
-      // Check if already an admin
-      final existingAdmin = await supabase
-        .from('admins')
-        .select()
-        .eq('user_id', userId)
-        .maybeSingle();
-        
-      if (existingAdmin != null) {
-        print("User is already an admin");
-        if (existingUser != null) {
-          // Return the response for existing user
-          return AuthResponse(
-            user: existingUser,
-            session: null,
-          );
-        }
-      } else {
-        // Add user to admins table
-        await supabase.from('admins').insert({
-          'user_id': userId,
-          'role': 'admin',
-        });
-        
-        print("Added user to admins table");
-      }
-      
-      // Return the appropriate response
-      if (existingUser != null) {
-        return AuthResponse(
-          user: existingUser,
-          session: null,
-        );
-      } else {
-        return AuthResponse(
-          user: supabase.auth.currentUser,
-          session: supabase.auth.currentSession,
-        );
-      }
-    } catch (e) {
-      print("Error in createAdminAccount: $e");
-      rethrow;
-    }
+  static Future<String?> createAdminAccount({
+  required String email,
+  required String password,
+  required Map<String, dynamic> userData,
+}) async {
+  // Verify that the current user is an admin
+  if (!await isUserAdmin()) {
+    throw const AuthException(
+      'Not authorized: Only existing admins can create admin accounts.',
+    );
   }
+      
+  try {
+    // Check if user already exists
+    final existingUser = await supabase.auth.admin
+      .getUserByEmail(email);
+            
+    String userId;
+          
+    if (existingUser != null) {
+      // User already exists
+      userId = existingUser.id;
+      print("User already exists with ID: $userId");
+    } else {
+      // Create a new user
+      final signUpResponse = await supabase.auth.signUp(
+        email: email,
+        password: password,
+        data: userData,
+      );
+              
+      if (signUpResponse.user == null) {
+        throw Exception("Failed to create user account");
+      }
+              
+      userId = signUpResponse.user!.id;
+      print("Created new user with ID: $userId");
+              
+      // Create user profile
+      await _createUserProfile(userId, userData);
+    }
+          
+    // Check if already an admin
+    final existingAdmin = await supabase
+      .from('admins')
+      .select()
+      .eq('user_id', userId)
+      .maybeSingle();
+            
+    if (existingAdmin != null) {
+      print("User is already an admin");
+    } else {
+      // Add user to admins table
+      await supabase.from('admins').insert({
+        'user_id': userId,
+        'role': 'admin',
+      });
+              
+      print("Added user to admins table");
+    }
+          
+    // Return just the userId string, not the entire AuthResponse
+    return userId;
+  } catch (e) {
+    print("Error in createAdminAccount: $e");
+    rethrow;
+  }
+}
   
   // Method to add an existing user as admin
   static Future<void> addExistingUserAsAdmin(String userId) async {

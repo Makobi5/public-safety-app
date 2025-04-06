@@ -64,6 +64,8 @@ DateTime? lastFetchTime;
   List<Map<String, dynamic>> recentReports = [];
   List<Map<String, dynamic>> recentActivities = [];
   List<Map<String, dynamic>> filteredReports = [];
+  String? _selectedStationId;
+  List<Map<String, dynamic>> _policeStations = [];
   
  @override
 void initState() {
@@ -72,6 +74,7 @@ void initState() {
   // Get current user first, then initialize other components
   _getCurrentUser().then((_) {
     // After getting user info, fetch dashboard data
+      _fetchPoliceStations();
     _fetchDashboardData();
     
     // Set up notification listener with station filtering if not central admin
@@ -150,7 +153,58 @@ Future<void> _getCurrentUser() async {
 }
   // Add after _getCurrentUser method
 
-  // Show notifications dialog
+// Fix for the Dart type issue in _fetchPoliceStations method
+
+Future<void> _fetchPoliceStations() async {
+  try {
+    final supabase = Supabase.instance.client;
+    
+    // If central admin, fetch all police stations
+    if (_isCentralAdmin) {
+      final response = await supabase
+          .from('police_stations')
+          .select('id, name, district_id')
+          .order('name');
+          
+      if (response != null && response is List) {
+        setState(() {
+          _policeStations = response.cast<Map<String, dynamic>>();
+          
+          // Debug output
+          print('Fetched ${_policeStations.length} police stations');
+          for (var station in _policeStations) {
+            print('Station: ${station['name']}, ID: ${station['id']}');
+          }
+        });
+      }
+    } else {
+      // For non-central admins, only their assigned station is available
+      if (_currentUserStationId != null) {
+        // Fix: Cast the _currentUserStationId to dynamic or explicitly handle as UUID
+        final response = await supabase
+            .from('police_stations')
+            .select('id, name, district_id')
+            .eq('id', _currentUserStationId as dynamic)  // Cast to dynamic to satisfy the type requirement
+            .limit(1);
+            
+        if (response != null && response is List && response.isNotEmpty) {
+          setState(() {
+            _policeStations = response.cast<Map<String, dynamic>>();
+            // Pre-select the only available station
+            _selectedStationId = _currentUserStationId;
+            
+            // Debug output
+            print('Fetched station: ${_policeStations[0]['name']}, ID: ${_policeStations[0]['id']}');
+          });
+        }
+      }
+    }
+  } catch (e) {
+    print('Error fetching police stations: $e');
+  }
+}
+
+  
 void _showNotificationsDialog() {
   showDialog(
     context: context,
@@ -828,49 +882,116 @@ Future<void> _fetchRecentActivity() async {
     }
   }
 
-  Future<void> _addAdmin() async {
-    if (!_formKey.currentState!.validate()) return;
-    
-    setState(() {
-      _isLoading = true;
-      _errorMessage = null;
-      _successMessage = null;
-    });
+// Fixed _addAdmin method in the AdminDashboard class
 
-    try {
-      // Create a new admin user
-      final userData = {
-        'first_name': _firstNameController.text.trim(),
-        'last_name': _lastNameController.text.trim(),
-        'role': 'admin', // Set role as admin
-      };
-      
-      // Call a special method to create admin account
-      await AuthService.createAdminAccount(
-        email: _emailController.text.trim(),
-        password: _passwordController.text,
-        userData: userData,
-      );
-      
-      setState(() {
-        _successMessage = 'Admin account created successfully!';
-        // Clear form fields
-        _emailController.clear();
-        _passwordController.clear();
-        _firstNameController.clear();
-        _lastNameController.clear();
-        _showAddAdminForm = false; // Return to dashboard view
-      });
-    } catch (e) {
-      setState(() {
-        _errorMessage = 'Error creating admin account: ${e.toString()}';
-      });
-    } finally {
-      setState(() {
-        _isLoading = false;
-      });
-    }
+Future<void> _addAdmin() async {
+  if (!_formKey.currentState!.validate()) return;
+  
+  // Check if a station is selected
+  if (_selectedStationId == null) {
+    setState(() {
+      _errorMessage = 'Please select a police station';
+    });
+    return;
   }
+  
+  setState(() {
+    _isLoading = true;
+    _errorMessage = null;
+    _successMessage = null;
+  });
+
+  try {
+    // Create a new admin user
+    final userData = {
+      'first_name': _firstNameController.text.trim(),
+      'last_name': _lastNameController.text.trim(),
+      'role': 'admin', // Set role as admin
+    };
+    
+    print('Creating admin with station assignment to: $_selectedStationId');
+    
+    // Call the method to create admin account - now returns String? instead of AuthResponse
+    final createdUserId = await AuthService.createAdminAccount(
+      email: _emailController.text.trim(),
+      password: _passwordController.text,
+      userData: userData,
+    );
+    
+    // Now assign the admin to the selected police station
+    if (createdUserId != null) {
+      final supabase = Supabase.instance.client;
+      
+      print('Getting admin record for user ID: $createdUserId');
+      
+      // First get the admin ID from the newly created user
+      final adminResponse = await supabase
+          .from('admins')
+          .select('id')
+          .eq('user_id', createdUserId)
+          .limit(1);
+          
+      print('Admin query response: $adminResponse');
+      
+      if (adminResponse != null && adminResponse is List && adminResponse.isNotEmpty) {
+        final adminId = adminResponse[0]['id'];
+        
+        print('Creating station assignment for admin ID: $adminId to station: $_selectedStationId');
+        
+        // Create the station assignment
+        await supabase.from('admin_station_assignments').insert({
+          'admin_id': adminId,
+          'station_id': _selectedStationId,
+          'created_at': DateTime.now().toIso8601String()
+        });
+        
+        print('Station assignment created successfully');
+
+        // Show success message in UI
+        setState(() {
+          _successMessage = 'Admin account for ${_firstNameController.text} ${_lastNameController.text} created successfully and assigned to station!';
+          
+          // Clear form fields
+          _emailController.clear();
+          _passwordController.clear();
+          _firstNameController.clear();
+          _lastNameController.clear();
+          _showAddAdminForm = false; // Return to dashboard view
+        });
+
+        // Optional: Show a SnackBar for immediate feedback
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Admin account created successfully!'),
+            backgroundColor: Colors.green,
+            duration: const Duration(seconds: 3),
+            action: SnackBarAction(
+              label: 'OK',
+              textColor: Colors.white,
+              onPressed: () {
+                ScaffoldMessenger.of(context).hideCurrentSnackBar();
+              },
+            ),
+          ),
+        );
+      } else {
+        print('Could not find admin record for user ID: $createdUserId');
+        throw Exception('Admin record not found');
+      }
+    } else {
+      throw Exception('No user ID returned from admin creation');
+    }
+  } catch (e) {
+    print('Error in _addAdmin: $e');
+    setState(() {
+      _errorMessage = 'Error creating admin account: ${e.toString()}';
+    });
+  } finally {
+    setState(() {
+      _isLoading = false;
+    });
+  }
+}
 
   // Filter reports based on search text
   void _filterReports(String searchText) {
@@ -2096,22 +2217,57 @@ Widget _buildAddAdminForm() {
                       ),
                       const SizedBox(height: 16),
                       
-                      // Success message
-                      if (_successMessage != null)
-                        Container(
-                          width: double.infinity,
-                          padding: const EdgeInsets.all(12),
-                          margin: const EdgeInsets.only(bottom: 16),
-                          decoration: BoxDecoration(
-                            color: Colors.green.shade100,
-                            borderRadius: BorderRadius.circular(8),
-                            border: Border.all(color: Colors.green.shade300),
-                          ),
-                          child: Text(
-                            _successMessage!,
-                            style: TextStyle(color: Colors.green.shade800),
-                          ),
+                    // Success message with improved styling
+                    if (_successMessage != null)
+                      Container(
+                        width: double.infinity,
+                        padding: const EdgeInsets.all(16),
+                        margin: const EdgeInsets.only(bottom: 20),
+                        decoration: BoxDecoration(
+                          color: Colors.green.shade50,
+                          borderRadius: BorderRadius.circular(10),
+                          border: Border.all(color: Colors.green.shade300),
+                          boxShadow: [
+                            BoxShadow(
+                              color: Colors.green.shade100,
+                              blurRadius: 4,
+                              offset: const Offset(0, 2),
+                            ),
+                          ],
                         ),
+                        child: Row(
+                          children: [
+                            Icon(
+                              Icons.check_circle,
+                              color: Colors.green.shade600,
+                              size: 28,
+                            ),
+                            const SizedBox(width: 12),
+                            Expanded(
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Text(
+                                    'Success!',
+                                    style: TextStyle(
+                                      color: Colors.green.shade800,
+                                      fontWeight: FontWeight.bold,
+                                      fontSize: 16,
+                                    ),
+                                  ),
+                                  const SizedBox(height: 4),
+                                  Text(
+                                    _successMessage!,
+                                    style: TextStyle(
+                                      color: Colors.green.shade700,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
                       
                       // Error message
                       if (_errorMessage != null)
@@ -2199,6 +2355,64 @@ Widget _buildAddAdminForm() {
                           return null;
                         },
                       ),
+                      const SizedBox(height: 16),
+                      
+                      // Police Station Selection
+                      DropdownButtonFormField<String>(
+                        value: _selectedStationId,
+                        decoration: const InputDecoration(
+                          labelText: 'Assign to Police Station',
+                          border: OutlineInputBorder(),
+                          prefixIcon: Icon(Icons.location_on),
+                        ),
+                        hint: const Text('Select Police Station'),
+                        items: _policeStations.map<DropdownMenuItem<String>>((station) {
+                          return DropdownMenuItem<String>(
+                            value: station['id'],
+                            child: Text(station['name']),
+                          );
+                        }).toList(),
+                        onChanged: (value) {
+                          setState(() {
+                            _selectedStationId = value;
+                          });
+                        },
+                        validator: (value) {
+                          if (value == null || value.isEmpty) {
+                            return 'Please select a police station';
+                          }
+                          return null;
+                        },
+                      ),
+                      
+                      // Display a note for central admins about station assignment
+                      if (_isCentralAdmin) 
+                        Padding(
+                          padding: const EdgeInsets.only(top: 8.0),
+                          child: Text(
+                            'As a Central Admin, you can assign to any police station',
+                            style: TextStyle(
+                              color: Colors.blue.shade700,
+                              fontSize: 12,
+                              fontStyle: FontStyle.italic,
+                            ),
+                          ),
+                        ),
+                        
+                      // Display a note for regular admins about station assignment
+                      if (!_isCentralAdmin && _currentPoliceStationName != null) 
+                        Padding(
+                          padding: const EdgeInsets.only(top: 8.0),
+                          child: Text(
+                            'You can only assign admins to $_currentPoliceStationName',
+                            style: TextStyle(
+                              color: Colors.orange.shade700,
+                              fontSize: 12,
+                              fontStyle: FontStyle.italic,
+                            ),
+                          ),
+                        ),
+                      
                       const SizedBox(height: 24),
                       
                       // Buttons
