@@ -285,6 +285,48 @@ void _showMediaDialogContent(Map<String, dynamic> file) {
     ],
   );
 }
+// Update this method in your _CaseDetailScreenState class
+Future<String?> _getReportedPoliceStationName() async {
+  if (_incidentData == null) return null;
+  
+  try {
+    final supabase = Supabase.instance.client;
+    
+    // Try to get different possible station ID fields
+    String? stationId;
+    if (_incidentData!.containsKey('police_station_id') && _incidentData!['police_station_id'] != null) {
+      stationId = _incidentData!['police_station_id'];
+      print('Found police_station_id: $stationId');
+    } else if (_incidentData!.containsKey('station_id') && _incidentData!['station_id'] != null) {
+      stationId = _incidentData!['station_id'];
+      print('Found station_id: $stationId');
+    } else if (_incidentData!.containsKey('reported_station_id') && _incidentData!['reported_station_id'] != null) {
+      stationId = _incidentData!['reported_station_id'];
+      print('Found reported_station_id: $stationId');
+    }
+    
+    // If we found a station ID, look up the station name
+    if (stationId != null) {
+      final stationResponse = await supabase
+          .from('police_stations')
+          .select('name')
+          .eq('id', stationId)
+          .maybeSingle();
+      
+      print('Station lookup response: $stationResponse');
+      
+      if (stationResponse != null) {
+        return stationResponse['name'] as String?;
+      }
+    }
+    
+    return 'Unknown Station';
+  } catch (e) {
+    print('Error fetching police station name: $e');
+    return 'Unknown Station';
+  }
+}
+
 Widget _buildInfoRow(String label, String value) {
   return Padding(
     padding: const EdgeInsets.only(bottom: 12),
@@ -1542,15 +1584,46 @@ Widget build(BuildContext context) {
                                     ),
                                   ),
                                   const SizedBox(height: 16),
-                                  _buildInfoRow('Reporter',
-                                      _reporterName ?? 'Anonymous'),
-                                  _buildInfoRow(
-                                      'Location Details',
-                                      _getFormattedLocation()),
-                                  _buildInfoRow(
-                                      'Description',
-                                      _incidentData!['description'] ??
-                                          'No description provided'),
+                                  _buildInfoRow('Reporter', _reporterName ?? 'Anonymous'),
+                                  _buildInfoRow('Location Details', _getFormattedLocation()),
+                                  
+                                  // Check if user is a Central Admin
+                                  FutureBuilder<bool>(
+                                    future: _accessControlService.isUserCentralAdmin(),
+                                    builder: (context, snapshot) {
+                                      // Handle error case explicitly
+                                      if (snapshot.hasError) {
+                                        print('Error checking central admin status: ${snapshot.error}');
+                                        return const SizedBox.shrink();
+                                      }
+                                      
+                                      // Wait while loading
+                                      if (snapshot.connectionState == ConnectionState.waiting) {
+                                        return const SizedBox.shrink();
+                                      }
+                                      
+                                      final isCentralAdmin = snapshot.data ?? false;
+                                      
+                                      // Only show reported station for central admins
+                                      if (isCentralAdmin) {
+                                        return FutureBuilder<String?>(
+                                          future: _getReportedPoliceStationName(),
+                                          builder: (context, stationSnapshot) {
+                                            if (stationSnapshot.connectionState == ConnectionState.waiting) {
+                                              return _buildInfoRow('Reported At', 'Loading...');
+                                            }
+                                            
+                                            final stationName = stationSnapshot.data ?? 'Unknown Station';
+                                            return _buildInfoRow('Reported At', stationName);
+                                          },
+                                        );
+                                      } else {
+                                        return const SizedBox.shrink();
+                                      }
+                                    },
+                                  ),
+                                  
+                                  _buildInfoRow('Description', _incidentData!['description'] ?? 'No description provided'),
                                 ],
                               ),
                             ),

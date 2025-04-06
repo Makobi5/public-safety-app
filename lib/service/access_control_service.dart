@@ -13,9 +13,37 @@ class AccessControlService {
   AccessControlService._internal();
   
   // Cache to improve performance
+  bool? _isAdmin;
   bool? _isCentralAdmin;
   String? _userStationId;
   String? _stationName;
+  
+  // Check if user is an admin (any police station)
+  Future<bool> isUserAdmin() async {
+    // Return cached value if available
+    if (_isAdmin != null) return _isAdmin!;
+    
+    try {
+      final supabase = Supabase.instance.client;
+      final user = supabase.auth.currentUser;
+      
+      if (user == null) return false;
+      
+      // Check if user exists in admins table
+      final response = await supabase
+          .from('admins')
+          .select('id')
+          .eq('user_id', user.id)
+          .maybeSingle();
+      
+      _isAdmin = response != null;
+      print('User is admin: $_isAdmin');
+      return _isAdmin!;
+    } catch (e) {
+      print('Error checking if user is admin: $e');
+      return false;
+    }
+  }
   
   // Check if user is central admin (Kabale Central Police Station)
   Future<bool> isUserCentralAdmin() async {
@@ -28,21 +56,58 @@ class AccessControlService {
       
       if (user == null) return false;
       
-      final response = await supabase
+      // Step 1: Find the admin record
+      final adminResponse = await supabase
           .from('admins')
-          .select('police_station_name')
+          .select('id')
           .eq('user_id', user.id)
-          .single();
+          .maybeSingle();
+          
+      print('Admin DB response: $adminResponse');
       
-      if (response != null) {
-        final stationName = response['police_station_name'] as String?;
-        _isCentralAdmin = stationName == 'Kabale Central Police Station';
-        return _isCentralAdmin!;
+      if (adminResponse == null) {
+        _isCentralAdmin = false;
+        return false;
       }
       
-      return false;
+      // Step 2: Find the station assignment
+      final adminId = adminResponse['id'];
+      final assignmentResponse = await supabase
+          .from('admin_station_assignments')
+          .select('station_id')
+          .eq('admin_id', adminId)
+          .maybeSingle();
+          
+      print('Assignment DB response: $assignmentResponse');
+      
+      if (assignmentResponse == null || assignmentResponse['station_id'] == null) {
+        _isCentralAdmin = false;
+        return false;
+      }
+      
+      // Step 3: Find the station name
+      final stationId = assignmentResponse['station_id'];
+      final stationResponse = await supabase
+          .from('police_stations')
+          .select('name')
+          .eq('id', stationId)
+          .maybeSingle();
+          
+      print('Station DB response: $stationResponse');
+      
+      if (stationResponse == null) {
+        _isCentralAdmin = false;
+        return false;
+      }
+      
+      // Check if this is Kabale Central Police Station
+      final stationName = stationResponse['name'] as String?;
+      _isCentralAdmin = stationName == 'Kabale Central Police Station';
+      print('User is central admin: $_isCentralAdmin');
+      return _isCentralAdmin!;
     } catch (e) {
       print('Error checking if user is central admin: $e');
+      _isCentralAdmin = false;
       return false;
     }
   }
@@ -58,18 +123,27 @@ class AccessControlService {
       
       if (user == null) return null;
       
-      final response = await supabase
+      // Step 1: Find the admin record
+      final adminResponse = await supabase
           .from('admins')
-          .select('station_id')
+          .select('id')
           .eq('user_id', user.id)
-          .single();
+          .maybeSingle();
+          
+      if (adminResponse == null) return null;
       
-      if (response != null) {
-        _userStationId = response['station_id'] as String?;
-        return _userStationId;
-      }
+      // Step 2: Find the station assignment
+      final adminId = adminResponse['id'];
+      final assignmentResponse = await supabase
+          .from('admin_station_assignments')
+          .select('station_id')
+          .eq('admin_id', adminId)
+          .maybeSingle();
+          
+      if (assignmentResponse == null) return null;
       
-      return null;
+      _userStationId = assignmentResponse['station_id'] as String?;
+      return _userStationId;
     } catch (e) {
       print('Error getting user station ID: $e');
       return null;
@@ -83,18 +157,20 @@ class AccessControlService {
     
     try {
       final supabase = Supabase.instance.client;
-      final user = supabase.auth.currentUser;
       
-      if (user == null) return null;
+      // First get the station ID
+      final stationId = await getUserStationId();
+      if (stationId == null) return null;
       
-      final response = await supabase
-          .from('admins')
-          .select('police_station_name')
-          .eq('user_id', user.id)
-          .single();
-      
-      if (response != null) {
-        _stationName = response['police_station_name'] as String?;
+      // Then get the station name
+      final stationResponse = await supabase
+          .from('police_stations')
+          .select('name')
+          .eq('id', stationId)
+          .maybeSingle();
+          
+      if (stationResponse != null) {
+        _stationName = stationResponse['name'] as String?;
         return _stationName;
       }
       
@@ -108,43 +184,37 @@ class AccessControlService {
   // Check if user has access to a specific incident
   Future<bool> canAccessIncident(String incidentId) async {
     try {
-      // Central admin can access all incidents
-      final isCentralAdmin = await isUserCentralAdmin();
-      if (isCentralAdmin) return true;
+      // Debug output to help with troubleshooting
+      print('Checking access for incident: $incidentId');
       
-      // Get the user's station ID
-      final stationId = await getUserStationId();
-      if (stationId == null) return false;
-      
-      // Check if the incident belongs to the user's station
-      final supabase = Supabase.instance.client;
-      
-      // Check both reported_station_id and station_id fields
-      final incidentResponse = await supabase
-          .from('incidents')
-          .select('station_id, police_station_id, reported_station_id')
-          .eq('id', incidentId)
-          .single();
-      
-      if (incidentResponse != null) {
-        // Try all possible station ID field names
-        final incidentStationId = incidentResponse['station_id'] as String?;
-        final incidentPoliceStationId = incidentResponse['police_station_id'] as String?;
-        final incidentReportedStationId = incidentResponse['reported_station_id'] as String?;
-        
-        // Debug output to help identify the correct field name
-        print('Incident ID: $incidentId');
-        print('User station ID: $stationId');
-        print('Incident station_id: $incidentStationId');
-        print('Incident police_station_id: $incidentPoliceStationId');
-        print('Incident reported_station_id: $incidentReportedStationId');
-        
-        // Check all possible matches
-        return stationId == incidentStationId || 
-               stationId == incidentPoliceStationId || 
-               stationId == incidentReportedStationId;
+      // First check if the user is an admin - ALL admins can access ALL cases
+      final admin = await isUserAdmin();
+      if (admin) {
+        print('Access granted: User is an admin');
+        return true;
       }
       
+      // For non-admins, check if this is the user's own report
+      final supabase = Supabase.instance.client;
+      final user = supabase.auth.currentUser;
+      
+      if (user == null) {
+        print('Access denied: No authenticated user');
+        return false;
+      }
+      
+      final incidentResponse = await supabase
+          .from('incidents')
+          .select('user_id')
+          .eq('id', incidentId)
+          .maybeSingle();
+      
+      if (incidentResponse != null && user.id == incidentResponse['user_id']) {
+        print('Access granted: User owns this report');
+        return true;
+      }
+      
+      print('Access denied: User is not admin and does not own this report');
       return false;
     } catch (e) {
       print('Error checking incident access: $e');
@@ -154,6 +224,7 @@ class AccessControlService {
   
   // Clear cache (useful for logout)
   void clearCache() {
+    _isAdmin = null;
     _isCentralAdmin = null;
     _userStationId = null;
     _stationName = null;
