@@ -633,9 +633,11 @@ Future<void> _fetchDashboardData() async {
     var incidentQuery = supabase.from('incidents').select();
 
     if (!_isCentralAdmin && _currentUserStationId != null) {
-      // Only show incidents for this admin's police station
-      // Cast _currentUserStationId to Object explicitly
-      incidentQuery = incidentQuery.eq('station_id', _currentUserStationId as Object);
+      // Use police_station_id instead of reported_station_id
+      incidentQuery = incidentQuery.eq('police_station_id', _currentUserStationId as Object);
+      
+      // Debug print
+      print('Current station ID (UUID): $_currentUserStationId');
     }
 
     // Order by creation date - don't reassign, create a new variable
@@ -646,7 +648,7 @@ Future<void> _fetchDashboardData() async {
     
     if (!_isCentralAdmin && _currentUserStationId != null) {
       // Only count incidents for this admin's police station
-      respondedQuery = respondedQuery.eq('station_id', _currentUserStationId as Object);
+      respondedQuery = respondedQuery.eq('police_station_id', _currentUserStationId as Object);
     }
     
     // Apply the 'not' filter and don't reassign
@@ -660,6 +662,12 @@ Future<void> _fetchDashboardData() async {
     if (responses[0] != null && responses[0] is List) {
       final incidents = responses[0].cast<Map<String, dynamic>>();
       final respondedIncidents = responses[1]?.cast<Map<String, dynamic>>() ?? [];
+      
+      // Debug print
+      print('Incidents found: ${incidents.length}');
+      incidents.forEach((incident) {
+        print('Incident ${incident['id']} - police_station_id: ${incident['police_station_id']}');
+      });
       
       // Process for dashboard metrics
       activeCase = incidents.length;
@@ -692,7 +700,7 @@ Future<void> _fetchDashboardData() async {
           'time': '${createdAt.hour.toString().padLeft(2, '0')}:${createdAt.minute.toString().padLeft(2, '0')}',
           'priority': _notificationService.getIncidentPriority(incident['incident_type']),
           'status': incident['status'] ?? 'Pending', // Explicitly set to 'Pending' if null
-          'station_id': incident['station_id'],
+          'station_id': incident['police_station_id'], // Updated to match correct column name
         };
       }).toList();
       
@@ -750,20 +758,22 @@ Future<void> _refreshDashboard() async {
   await _fetchDashboardData();
 }
   
-// Modify the _fetchRecentActivity method to filter by station
 Future<void> _fetchRecentActivity() async {
   try {
     // Get Supabase client
     final supabase = Supabase.instance.client;
     
-    // Base query
+    // Base query - updated to include police_station_id
     var activityQuery = supabase
         .from('incident_activity')
-        .select('*, incidents!inner(incident_type, station_id)');
+        .select('*, incidents!inner(incident_type, police_station_id)');
     
     // If not central admin, filter activities by station
     if (!_isCentralAdmin && _currentUserStationId != null) {
-      activityQuery = activityQuery.eq('incidents.station_id', _currentUserStationId as Object);
+      activityQuery = activityQuery.eq('incidents.police_station_id', _currentUserStationId as Object);
+      
+      // Debug print
+      print('Filtering activities by station ID: $_currentUserStationId');
     }
     
     // Complete the query - don't reassign
@@ -774,12 +784,16 @@ Future<void> _fetchRecentActivity() async {
       // Process data for activity log display
       recentActivities = response.cast<Map<String, dynamic>>();
       print('Recent activity fetched: ${recentActivities.length} entries');
+      
+      // Debug logging
+      for (var activity in recentActivities) {
+        print('Activity for incident ${activity['incident_id']} - police_station_id: ${activity['incidents']['police_station_id']}');
+      }
     }
   } catch (e) {
     print('Error fetching recent activity: $e');
   }
 }
-  
   // Determine incident priority based on type
   String _getIncidentPriority(String? incidentType) {
     if (incidentType == null) return 'Low';

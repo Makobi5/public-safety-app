@@ -1,4 +1,4 @@
-// Create a new file: lib/service/access_control_service.dart
+// lib/service/access_control_service.dart
 
 import 'package:supabase_flutter/supabase_flutter.dart';
 
@@ -29,7 +29,7 @@ class AccessControlService {
       if (user == null) return false;
       
       final response = await supabase
-          .from('admin_tb')
+          .from('admins')
           .select('police_station_name')
           .eq('user_id', user.id)
           .single();
@@ -59,7 +59,7 @@ class AccessControlService {
       if (user == null) return null;
       
       final response = await supabase
-          .from('admin_tb')
+          .from('admins')
           .select('station_id')
           .eq('user_id', user.id)
           .single();
@@ -88,7 +88,7 @@ class AccessControlService {
       if (user == null) return null;
       
       final response = await supabase
-          .from('admin_tb')
+          .from('admins')
           .select('police_station_name')
           .eq('user_id', user.id)
           .single();
@@ -118,15 +118,31 @@ class AccessControlService {
       
       // Check if the incident belongs to the user's station
       final supabase = Supabase.instance.client;
-      final response = await supabase
+      
+      // Check both reported_station_id and station_id fields
+      final incidentResponse = await supabase
           .from('incidents')
-          .select('station_id')
+          .select('station_id, police_station_id, reported_station_id')
           .eq('id', incidentId)
           .single();
       
-      if (response != null) {
-        final incidentStationId = response['station_id'] as String?;
-        return incidentStationId == stationId;
+      if (incidentResponse != null) {
+        // Try all possible station ID field names
+        final incidentStationId = incidentResponse['station_id'] as String?;
+        final incidentPoliceStationId = incidentResponse['police_station_id'] as String?;
+        final incidentReportedStationId = incidentResponse['reported_station_id'] as String?;
+        
+        // Debug output to help identify the correct field name
+        print('Incident ID: $incidentId');
+        print('User station ID: $stationId');
+        print('Incident station_id: $incidentStationId');
+        print('Incident police_station_id: $incidentPoliceStationId');
+        print('Incident reported_station_id: $incidentReportedStationId');
+        
+        // Check all possible matches
+        return stationId == incidentStationId || 
+               stationId == incidentPoliceStationId || 
+               stationId == incidentReportedStationId;
       }
       
       return false;
