@@ -681,6 +681,15 @@ Future<void> _signIn() async {
       );
       
       if (response.user != null) {
+        // Verify the user is actually an admin
+        final isAdmin = await AuthService.isUserAdmin();
+        
+        if (!isAdmin) {
+          // If not an admin, throw error and sign out
+          await AuthService.signOut();
+          throw AuthException('Unauthorized: Admin access required.');
+        }
+        
         if (mounted) {
           // Navigate to admin dashboard on successful admin login
           Navigator.of(context).pushNamedAndRemoveUntil(
