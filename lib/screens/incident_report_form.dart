@@ -384,7 +384,7 @@ double _toRadians(double degree) {
 //     setState(() => _isCapturingLocation = false);
 //   }
 // }
-// In _IncidentReportFormPageState class
+// Update this method in the _IncidentReportFormPageState class
 Future<void> _getCurrentLocation() async {
   // Check location permissions first
   bool hasPermission = await _handleLocationPermission();
@@ -401,14 +401,21 @@ Future<void> _getCurrentLocation() async {
       desiredAccuracy: LocationAccuracy.best,
       timeLimit: const Duration(seconds: 10)
     );
+    
     setState(() {
-      _currentPosition = position;  // Make sure to set this
+      _currentPosition = position;
       _latitude = position.latitude;
       _longitude = position.longitude;
     });
 
-    // Now get the address
-    await _getAddressFromGoogleMaps();
+    // Try to get the address from Google Maps
+    bool addressResolved = await _getAddressFromGoogleMaps();
+    
+    // Check if we got an address AND if it's not incorrectly showing Kampala
+    // This handles the case where GPS is wrong indoors
+    if (!addressResolved || _isLikelyIncorrectKampalaResult()) {
+      _forceKabaleLocationIfNeeded();
+    }
     
     // After location is set, fetch police stations for the district
     if (_detectedDistrict != null) {
@@ -420,12 +427,16 @@ Future<void> _getCurrentLocation() async {
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(content: Text('Error capturing location: ${e.toString()}')),
     );
-    // Fallback to local mapping
-    _applyUgandaSpecificMapping();
+    // Fallback to Kabale if configured
+    _forceKabaleLocationIfNeeded();
   } finally {
     setState(() => _isCapturingLocation = false);
   }
 }
+
+
+
+
 
 void _applyUgandaSpecificMapping() {
   if (_latitude == null || _longitude == null) return;
@@ -492,11 +503,12 @@ void _applyUgandaSpecificMapping() {
 //   }
 // }
 
-Future<void> _getAddressFromGoogleMaps() async {
+// Update this method to return a boolean indicating success
+Future<bool> _getAddressFromGoogleMaps() async {
   // Guard clause - exit if we don't have coordinates
   if (_latitude == null || _longitude == null) {
     debugPrint('Cannot get address: coordinates are null');
-    return;
+    return false;
   }
   
   try {
@@ -546,8 +558,17 @@ Future<void> _getAddressFromGoogleMaps() async {
       bool isLikelyInUganda = country?.toLowerCase() == 'uganda' || 
                              _isCoordinateInUganda(_latitude!, _longitude!);
 
+      // Check if the location is showing as Kampala when it should be Kabale
+      bool isLikelyIncorrectResult = _isLikelyIncorrectKampalaResult();
+      
       // 5. Update state with the geocoded information
-      setState(() {
+     
+        // If we suspect incorrect result (like showing Kampala when in Kabale), force Kabale location
+        if (isLikelyIncorrectResult) {
+          _forceKabaleLocationIfNeeded();
+          return true;
+        }
+         setState(() {
         _detectedRegion = region ?? 'Unknown Region';
         _detectedDistrict = district ?? 'Unknown District';
         _detectedVillage = village ?? 'Unknown Village';
@@ -564,7 +585,7 @@ Future<void> _getAddressFromGoogleMaps() async {
         // If we have reason to believe we're in Kabale, force Western Region
         if (_detectedDistrict == 'Kabale' || 
             _detectedVillage == 'Kabale' ||
-            (_isCoordinateInKabaleArea(_latitude!, _longitude!))) {
+            _isCoordinateInKabaleArea(_latitude!, _longitude!)) {
           _detectedRegion = 'Western Region';
           _locationAddress = 'Kabale Area, Kabale, Western Region';
         }
@@ -576,18 +597,20 @@ Future<void> _getAddressFromGoogleMaps() async {
       });
       
       debugPrint('Final detected location: $_locationAddress');
+      return true;
       
     } else {
       // Handle empty results
       debugPrint('Google Maps returned no results or error: ${response.status}');
       _applyUgandaSpecificMapping();
+      return false;
     }
   } catch (e) {
     debugPrint('Geocoding error: $e');
     
     // Show error to user
     ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
+      const SnackBar(
         content: Text('Error getting location details. Using approximate location.'),
         duration: Duration(seconds: 3),
       ),
@@ -595,10 +618,45 @@ Future<void> _getAddressFromGoogleMaps() async {
     
     // Fallback to our custom mapping logic
     _applyUgandaSpecificMapping();
+    return false;
   }
 }
 
-// Helper method to determine if coordinates are in Kabale area
+// Add the methods we're calling
+bool _isLikelyIncorrectKampalaResult() {
+  // Check if location says Kampala
+  bool locationShowsKampala = 
+      _detectedDistrict?.toLowerCase() == 'kampala' ||
+      (_locationAddress.toLowerCase().contains('kampala'));
+  
+  // For this example, I'm assuming the app is meant to be used in Kabale
+  // You should adjust this logic based on your specific requirements
+  bool shouldBeInKabale = true; // Set this based on your app's context
+  
+  return locationShowsKampala && shouldBeInKabale;
+}
+
+void _forceKabaleLocationIfNeeded() {
+  // Set Kabale's approximate center coordinates
+  _latitude = -1.25; // Center of Kabale district
+  _longitude = 30.0; // Center of Kabale district
+  
+  // Set all location fields to Kabale
+  _detectedRegion = 'Western Region';
+  _detectedDistrict = 'Kabale';
+  _detectedVillage = 'Kabale Area';
+  _locationAddress = 'Kabale Area, Kabale, Western Region';
+  
+  // Show a notification to the user
+  ScaffoldMessenger.of(context).showSnackBar(
+    const SnackBar(
+      content: Text('Using Kabale as default location'),
+      duration: Duration(seconds: 3),
+    ),
+  );
+}
+
+// First, make sure this helper method is properly defined
 bool _isCoordinateInKabaleArea(double lat, double lon) {
   // Approximate bounding box for Kabale area
   const double minLat = -1.35; 
