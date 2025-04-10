@@ -5,7 +5,8 @@ import '../models/notification_model.dart';
 import 'dart:async';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'dart:convert';
-import 'package:flutter/foundation.dart'; // Add this import
+import 'package:flutter/foundation.dart';
+import 'package:flutter/material.dart';
 
 class NotificationService {
   static final NotificationService _instance = NotificationService._internal();
@@ -14,8 +15,6 @@ class NotificationService {
   final Map<String, bool> _processedIncidents = {};
   Timer? _incidentTimer;
   
-
-
   // Stream controller for real-time notifications
   final _notificationStreamController = StreamController<NotificationModel>.broadcast();
   Stream<NotificationModel> get notificationStream => _notificationStreamController.stream;
@@ -27,7 +26,7 @@ class NotificationService {
   NotificationService._internal() {
     // Initialize the last checked time when service is created
     _lastCheckedTime = DateTime.now();
-      loadProcessedIncidentsState();
+    loadProcessedIncidentsState();
   }
 
   // Get Supabase client
@@ -56,103 +55,89 @@ class NotificationService {
       rethrow;
     }
   }
-// Add this method to support filtering notifications by station
-Future<List<Map<String, dynamic>>> getNotificationsForStation(String stationId) async {
-  try {
-    final supabase = Supabase.instance.client;
-    final user = supabase.auth.currentUser;
-    
-    if (user != null) {
-      final response = await supabase
-          .from('notifications')
-          .select('*, incidents!inner(*)')
-          .eq('user_id', user.id)
-          .eq('incidents.station_id', stationId)
-          .order('created_at', ascending: false);
-      
-      if (response != null && response is List) {
-        return response.cast<Map<String, dynamic>>();
-      }
-    }
-    
-    return [];
-  } catch (e) {
-    print('Error getting notifications for station: $e');
-    return [];
-  }
-}
 
-// Add this method to determine if a user is a central admin
-Future<bool> isUserCentralAdmin() async {
-  try {
-    final supabase = Supabase.instance.client;
-    final user = supabase.auth.currentUser;
-    
-    if (user == null) return false;
-    
-    final response = await supabase
-        .from('admin_tb')
-        .select('police_station_name')
-        .eq('user_id', user.id)
-        .single();
-    
-    if (response != null) {
-      final stationName = response['police_station_name'] as String?;
-      return stationName == 'Kabale Central Police Station';
-    }
-    
-    return false;
-  } catch (e) {
-    print('Error checking if user is central admin: $e');
-    return false;
-  }
-}
-
-// Add this method to get a user's assigned station ID
-Future<String?> getUserStationId() async {
-  try {
-    final supabase = Supabase.instance.client;
-    final user = supabase.auth.currentUser;
-    
-    if (user == null) return null;
-    
-    final response = await supabase
-        .from('admin_tb')
-        .select('station_id')
-        .eq('user_id', user.id)
-        .single();
-    
-    if (response != null) {
-      return response['station_id'] as String?;
-    }
-    
-    return null;
-  } catch (e) {
-    print('Error getting user station ID: $e');
-    return null;
-  }
-}
-
-  // Get user notifications
-  Future<List<NotificationModel>> getUserNotifications(String userId) async {
+  // Get notifications for a specific station
+  Future<List<Map<String, dynamic>>> getNotificationsForStation(String stationId) async {
     try {
-      final response = await supabase
-          .from('notifications')
-          .select()
-          .eq('user_id', userId)
-          .order('created_at', ascending: false);
-
-      if (response != null && response is List) {
-        return response
-            .map((json) => NotificationModel.fromJson(json))
-            .toList();
+      final supabase = Supabase.instance.client;
+      final user = supabase.auth.currentUser;
+      
+      if (user != null) {
+        final response = await supabase
+            .from('notifications')
+            .select('*, incidents!inner(*)')
+            .eq('user_id', user.id)
+            .eq('incidents.police_station_id', stationId)
+            .order('created_at', ascending: false);
+        
+        if (response != null && response is List) {
+          return response.cast<Map<String, dynamic>>();
+        }
       }
+      
       return [];
     } catch (e) {
-      print('Error fetching notifications: $e');
+      print('Error getting notifications for station: $e');
       return [];
     }
   }
+
+// Corrected getUserNotifications method with proper type handling
+
+Future<List<NotificationModel>> getUserNotifications({
+  required String userId,
+  String? stationId,
+  bool unreadOnly = false
+}) async {
+  try {
+    // Start with the basic query builder
+    final queryBuilder = supabase
+        .from('notifications')
+        .select('*, incidents!left(*)');
+    
+    // Apply filters directly to the initial builder
+    final filteredQuery = queryBuilder
+        .eq('user_id', userId);
+    
+    // Apply read status filter if needed
+    final readStatusQuery = unreadOnly 
+        ? filteredQuery.eq('is_read', false) 
+        : filteredQuery;
+    
+    // Apply ordering - don't try to reassign the variable
+    final orderedQuery = readStatusQuery.order('created_at', ascending: false);
+    
+    // Execute the query - note we don't try to reassign to the original variable
+    final response = await orderedQuery;
+    
+    // Process results and handle station filtering
+    List<Map<String, dynamic>> filteredResponse = [];
+    if (response != null && response is List) {
+      if (stationId != null) {
+        // Filter in memory after the query
+        filteredResponse = response.where((item) {
+          // Check if incidents data exists and has the right station ID
+          final incidents = item['incidents'];
+          if (incidents == null) return false;
+          return incidents['police_station_id'] == stationId;
+        }).toList();
+      } else {
+        filteredResponse = List<Map<String, dynamic>>.from(response);
+      }
+      
+      // Convert to model objects
+      return filteredResponse
+          .map((json) => NotificationModel.fromJson(json))
+          .toList();
+    }
+    return [];
+  } catch (e) {
+    debugPrint('Error fetching notifications: $e');
+    return [];
+  }
+}
+
+  // Load processed incidents from SharedPreferences
   Future<void> loadProcessedIncidentsState() async {
     try {
       final prefs = await SharedPreferences.getInstance();
@@ -163,33 +148,42 @@ Future<String?> getUserStationId() async {
         decoded.forEach((key, value) {
           _processedIncidents[key] = value as bool;
         });
-        print('Loaded ${_processedIncidents.length} processed incidents.');
+        debugPrint('Loaded ${_processedIncidents.length} processed incidents.');
       }
     } catch (e) {
-      print('Error loading processed incidents state: $e');
+      debugPrint('Error loading processed incidents state: $e');
       _processedIncidents.clear();
     }
   }
 
+  // Save processed incidents to SharedPreferences
   Future<void> saveProcessedIncidentsState() async {
     try {
       final prefs = await SharedPreferences.getInstance();
       await prefs.setString('processed_incidents', jsonEncode(_processedIncidents));
-      print('Saved processed incidents state.');
     } catch (e) {
-      print('Error saving processed incidents state: $e');
+      debugPrint('Error saving processed incidents state: $e');
     }
   }
 
-  // Mark notification as read
+  // Mark notification as read with optimistic UI update
   Future<void> markAsRead(String notificationId) async {
     try {
+      // Update in database
       await supabase
           .from('notifications')
           .update({'is_read': true})
           .eq('id', notificationId);
+          
+      // Emit update to any listeners
+      final currentUser = supabase.auth.currentUser;
+      if (currentUser != null) {
+        // Trigger any UI updates
+        final updated = await getUserNotifications(userId: currentUser.id);
+        // Broadcast update if needed
+      }
     } catch (e) {
-      print('Error marking notification as read: $e');
+      debugPrint('Error marking notification as read: $e');
       rethrow;
     }
   }
@@ -202,280 +196,156 @@ Future<String?> getUserStationId() async {
           .update({'is_read': true})
           .eq('user_id', userId);
     } catch (e) {
-      print('Error marking all notifications as read: $e');
+      debugPrint('Error marking all notifications as read: $e');
       rethrow;
     }
   }
-Future<void> processNewIncident(Map<String, dynamic> incident) async {
+Future<int> getUnreadCount(String userId, {String? stationId}) async {
   try {
-    final String incidentId = incident['id'].toString();
-    if (isIncidentProcessed(incidentId)) {
-      debugPrint('Incident $incidentId already processed');
-      return;
-    }
-
-    final String incidentType = incident['incident_type']?.toString() ?? 'Unknown Incident';
-    final String district = incident['district']?.toString() ?? 'Unknown Location';
-    final String priority = getIncidentPriority(incidentType);
-    final String? status = incident['status']?.toString();
-
-    // Validate required fields
-    if (incidentId.isEmpty) {
-      throw Exception('Invalid incident ID');
-    }
-
-    // Get all admin users (with error handling)
-    final adminsResponse = await supabase
-        .from('user_profiles')
-        .select('user_id')
-        .eq('role', 'admin');
-
-    if (adminsResponse == null || adminsResponse.isEmpty) {
-      debugPrint('No admin users found');
-      return;
-    }
-
-    // Create notifications for all admins
-    final notifications = adminsResponse.map<Future>((admin) async {
-      final String userId = admin['user_id'].toString();
-      if (userId.isEmpty) return;
-      
-      await createNotification(
-        userId: userId,
-        title: 'New ${priority == 'High' ? '⚠️ ' : ''}$incidentType',
-        message: 'Reported in $district\nStatus: ${status ?? 'Pending'}',
-        priority: priority,
-        incidentId: incidentId,
-      );
-    }).toList();
-
-    // Process all notifications in parallel
-    await Future.wait(notifications);
-
-    // Mark incident as processed after successful notification
-    markIncidentAsProcessed(incidentId);
-    await saveProcessedIncidentsState();
-
-    debugPrint('Successfully processed incident $incidentId');
-  } catch (e, stackTrace) {
-    debugPrint('Error processing incident: $e');
-    debugPrint('Stack trace: $stackTrace');
-    rethrow;
-  }
-}
-
-  // Delete a notification
-  Future<void> deleteNotification(String notificationId) async {
-    try {
-      await supabase
-          .from('notifications')
-          .delete()
-          .eq('id', notificationId);
-    } catch (e) {
-      print('Error deleting notification: $e');
-      rethrow;
-    }
-  }
-
-  // Check for new incidents
-Future<List<Map<String, dynamic>>> checkForNewIncidents() async {
-  try {
-    // Initialize last checked time if not set (check last 5 minutes)
-    _lastCheckedTime ??= DateTime.now().subtract(const Duration(minutes: 5));
+    // Build a query that selects just the IDs we need
+    var query = supabase
+        .from('notifications')
+        .select(stationId != null ? 'id, incidents!left(police_station_id)' : 'id')
+        .eq('user_id', userId)
+        .eq('is_read', false);
     
-    // Query for reports created after the last check time
-    final response = await supabase
-        .from('incidents')
-        .select('''
-          id,
-          incident_type,
-          district,
-          created_at,
-          status,
-          description
-        ''')
-        .gt('created_at', _lastCheckedTime!.toIso8601String())
-        .order('created_at', ascending: false)
-        .limit(50); // Limit to prevent overload
-
-    // Update last checked time immediately after successful query
-    _lastCheckedTime = DateTime.now();
+    // Execute the query
+    final response = await query;
     
-    if (response != null && response is List) {
-      final newReports = response.cast<Map<String, dynamic>>();
-      
-      // Filter out processed incidents and mark new ones
-      final newIncidents = <Map<String, dynamic>>[];
-      
-      for (final report in newReports) {
-        final reportId = report['id'].toString();
-        if (!_processedIncidents.containsKey(reportId)) {
-          // Add priority classification
-          report['priority'] = getIncidentPriority(report['incident_type']);
-          newIncidents.add(report);
-          _processedIncidents[reportId] = true;
-        }
-      }
-
-      // Save state if we found new incidents
-      if (newIncidents.isNotEmpty) {
-        await saveProcessedIncidentsState();
-      }
-      
-      return newIncidents;
+    // Handle empty results
+    if (response == null || !(response is List)) {
+      return 0;
     }
     
-    return [];
+    // If we need to filter by station ID, do it in memory
+    if (stationId != null) {
+      return response.where((item) {
+        if (item['incidents'] == null) return false;
+        return item['incidents']['police_station_id'] == stationId;
+      }).length;
+    } else {
+      // Otherwise just return the count of items
+      return response.length;
+    }
   } catch (e) {
-    // Log error but don't crash - we'll try again next check
-    debugPrint('Error checking for new incidents: $e');
-    // Reset last checked time to try again next time
-    _lastCheckedTime = DateTime.now().subtract(const Duration(minutes: 1));
-    return [];
+    debugPrint('Error getting unread count: $e');
+    return 0;
   }
 }
-
- void startIncidentMonitoring({
-    required Duration interval,
-    required Function(List<Map<String, dynamic>>) onNewIncidents,
-    String? stationId,
-  }) {
-    // Cancel any existing timer
-    stopIncidentMonitoring();
-    
-    // Store the last check time
-    DateTime lastCheckTime = DateTime.now();
-    
-    // Start periodic timer
-    _incidentTimer = Timer.periodic(interval, (timer) async {
-      try {
-        final supabase = Supabase.instance.client;
-        
-        // Create a base query
-        var query = supabase
-            .from('incidents')
-            .select()
-            .gt('created_at', lastCheckTime.toIso8601String());
-        
-        // Add station filter if provided
-        if (stationId != null) {
-          query = query.eq('station_id', stationId as Object);
-        }
-        
-        // Execute the query
-        final response = await query.order('created_at', ascending: false);
-        
-        // Update last check time
-        lastCheckTime = DateTime.now();
-        
-        if (response != null && response is List && response.isNotEmpty) {
-          final newIncidents = response.cast<Map<String, dynamic>>();
-          print('Found ${newIncidents.length} new incidents');
-          
-          // Call the callback with new incidents
-          onNewIncidents(newIncidents);
-        }
-      } catch (e) {
-        print('Error monitoring for new incidents: $e');
-      }
-    });
-  }
+void startIncidentMonitoring({
+  required Duration interval,
+  required Function(List<Map<String, dynamic>>) onNewIncidents,
+  String? stationId,
+}) {
+  // Cancel any existing timer
+  stopIncidentMonitoring();
   
+  // Store the last check time
+  DateTime lastCheckTime = DateTime.now();
+  
+  // Start periodic timer
+  _incidentTimer = Timer.periodic(interval, (timer) async {
+    try {
+      debugPrint('Checking for new incidents since ${lastCheckTime.toIso8601String()}');
+      
+      // Create a base query
+      var query = supabase
+          .from('incidents')
+          .select('*')
+          .gt('created_at', lastCheckTime.toIso8601String());
+      
+      // Add station filter if provided
+      if (stationId != null) {
+        debugPrint('Filtering incidents by station ID: $stationId');
+        query = query.eq('police_station_id', stationId);
+      }
+      
+      // Execute the query
+      final response = await query.order('created_at', ascending: false);
+      
+      // Update last check time
+      lastCheckTime = DateTime.now();
+      
+      if (response != null && response is List && response.isNotEmpty) {
+        final newIncidents = response.cast<Map<String, dynamic>>();
+        debugPrint('Found ${newIncidents.length} new incidents');
+        
+        // Call the callback with new incidents
+        onNewIncidents(newIncidents);
+      } else {
+        debugPrint('No new incidents found');
+      }
+    } catch (e) {
+      debugPrint('Error monitoring for new incidents: $e');
+    }
+  });
+}
+  
+  // Stop incident monitoring
   void stopIncidentMonitoring() {
     _incidentTimer?.cancel();
     _incidentTimer = null;
   }
 
-  
-  bool isIncidentProcessed(String incidentId) {
-    return _processedIncidents.containsKey(incidentId) && _processedIncidents[incidentId] == true;
-  }
- void markIncidentAsProcessed(String incidentId) {
-    _processedIncidents[incidentId] = true;
-    saveProcessedIncidentsState(); // Save after updating
-  }
-  
-  // Reset tracking for an incident (useful for testing)
-void resetIncidentTracking(String incidentId) {
-  _processedIncidents.remove(incidentId);
-  saveProcessedIncidentsState();
-}
-
-
-  
-  // Reset all incident tracking
- void resetAllIncidentTracking() {
-  _processedIncidents.clear();
-  _lastCheckedTime = DateTime.now();
-  saveProcessedIncidentsState();
-}
-  
-  // Get unread notification count
-  Future<int> getUnreadCount(String userId) async {
+  // Process a new incident and create notifications for all relevant admins
+  Future<void> processNewIncident(Map<String, dynamic> incident) async {
     try {
-      final response = await supabase
-          .from('notifications')
-          .count()
-          .eq('user_id', userId)
-          .eq('is_read', false);
+      final String incidentId = incident['id'].toString();
       
-      if (response != null) {
-        if (response is List) {
-          final listResponse = response as List;
-          if (listResponse.isNotEmpty) {
-            return listResponse[0]['count'] ?? 0;
-          }
-        } else if (response is int) {
-          return response;
-        }
+      // Skip if already processed
+      if (_processedIncidents[incidentId] == true) {
+        return;
       }
-      return 0;
+
+      final String incidentType = incident['incident_type'] ?? 'Unknown Incident';
+      final String district = incident['district'] ?? 'Unknown Location';
+      final String priority = getIncidentPriority(incidentType);
+      final String? policeStationId = incident['police_station_id']?.toString();
+      
+      // Get all relevant admin users
+      var adminsQuery = supabase.from('admins')
+          .select('id, user_id, admin_station_assignments!inner(station_id)');
+          
+      // If there's a station ID, filter admins by station assignment or central admin
+      if (policeStationId != null) {
+        // Find admins assigned to this station OR central admins
+        adminsQuery = adminsQuery.or('admin_station_assignments.station_id.eq.$policeStationId,admin_station_assignments.station_id.eq.${getCentralPoliceStationId()}');
+      }
+      
+      final adminsResponse = await adminsQuery;
+      
+      if (adminsResponse == null || adminsResponse.isEmpty) {
+        debugPrint('No admin users found for incident notification');
+        return;
+      }
+
+      // Create notifications for all relevant admins
+      for (final admin in adminsResponse) {
+        final userId = admin['user_id'].toString();
+        
+        await createNotification(
+          userId: userId,
+          title: 'New ${priority == 'High' ? '⚠️ ' : ''}$incidentType',
+          message: 'Reported in $district\nStatus: ${incident['status'] ?? 'Pending'}',
+          priority: priority,
+          incidentId: incidentId,
+        );
+      }
+
+      // Mark incident as processed after successful notification
+      _processedIncidents[incidentId] = true;
+      await saveProcessedIncidentsState();
+      
+      debugPrint('Successfully processed incident $incidentId');
     } catch (e) {
-      print('Error getting unread count: $e');
-      return 0;
+      debugPrint('Error processing incident: $e');
     }
   }
   
-  // Create case update notification
-  Future<void> createCaseUpdateNotification({
-    required String userId,
-    required String incidentType,
-    required String status,
-    required String incidentId,
-  }) async {
-    try {
-      await createNotification(
-        userId: userId,
-        title: 'Case Status Updated',
-        message: 'Your case "$incidentType" has been updated to: $status. Tap to view details.',
-        priority: 'Medium',
-        incidentId: incidentId,
-      );
-    } catch (e) {
-      print('Error creating case update notification: $e');
-      rethrow;
-    }
-  }
-  
-  // Create action notification
-  Future<void> createActionNotification({
-    required String userId,
-    required String incidentType,
-    required String action,
-    required String incidentId,
-  }) async {
-    try {
-      await createNotification(
-        userId: userId,
-        title: 'Action Taken on Your Case',
-        message: 'Admin action "$action" has been taken on your case: "$incidentType". Tap to view details.',
-        priority: 'High',
-        incidentId: incidentId,
-      );
-    } catch (e) {
-      print('Error creating action notification: $e');
-      rethrow;
-    }
+  // Helper to get central police station ID
+  String getCentralPoliceStationId() {
+    // Replace with actual ID from your database
+    return 'central-police-station-id';
   }
   
   // Method to determine incident priority based on type
@@ -509,6 +379,143 @@ void resetIncidentTracking(String incidentId) {
       return 'Medium';
     } else {
       return 'Low';
+    }
+  }
+  
+  // Show a notification dialog
+  void showNotificationDialog(BuildContext context, List<Map<String, dynamic>> notifications, Function onNotificationTapped) {
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Row(
+          children: [
+            const Icon(Icons.notifications, color: Color(0xFF003366)),
+            const SizedBox(width: 8),
+            const Text('Notifications'),
+          ],
+        ),
+        content: SizedBox(
+          width: double.maxFinite,
+          child: notifications.isEmpty
+              ? const Center(
+                  child: Padding(
+                    padding: EdgeInsets.all(20.0),
+                    child: Text('No notifications'),
+                  ),
+                )
+              : ListView.builder(
+                  shrinkWrap: true,
+                  itemCount: notifications.length,
+                  itemBuilder: (context, index) {
+                    final notification = notifications[index];
+                    return ListTile(
+                      leading: CircleAvatar(
+                        backgroundColor: notification['read'] == true
+                            ? Colors.grey.shade200
+                            : _getPriorityColor(notification['priority'] ?? 'Low'),
+                        child: Icon(
+                          Icons.notification_important,
+                          color: notification['read'] == true
+                              ? Colors.grey
+                              : _getPriorityTextColor(notification['priority'] ?? 'Low'),
+                        ),
+                      ),
+                      title: Text(
+                        notification['title'],
+                        style: TextStyle(
+                          fontWeight: notification['read'] == true ? FontWeight.normal : FontWeight.bold,
+                        ),
+                      ),
+                      subtitle: Text(notification['message']),
+                      trailing: Text(notification['time']),
+                      onTap: () {
+                        Navigator.of(context).pop();
+                        onNotificationTapped(notification, index);
+                      },
+                    );
+                  },
+                ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () async {
+              // Mark all as read and close dialog - implementation in parent widget
+              Navigator.of(context).pop('markAllRead');
+            },
+            child: const Text('Mark All Read'),
+          ),
+          ElevatedButton(
+            onPressed: () {
+              Navigator.of(context).pop();
+            },
+            style: ElevatedButton.styleFrom(
+              backgroundColor: const Color(0xFF003366),
+            ),
+            child: const Text('Close'),
+          ),
+        ],
+      ),
+    );
+  }
+  
+  // Show a toast notification
+  void showToastNotification(BuildContext context, Map<String, dynamic> notification) {
+    final priority = notification['priority'] ?? 'Low';
+    
+    final snackBar = SnackBar(
+      content: Row(
+        children: [
+          Icon(Icons.notification_important, color: Colors.white),
+          SizedBox(width: 8),
+          Expanded(
+            child: Text(
+              notification['title'],
+              style: TextStyle(fontWeight: FontWeight.bold),
+            ),
+          ),
+        ],
+      ),
+      backgroundColor: priority == 'High' ? Colors.red : 
+                     priority == 'Medium' ? Colors.orange : Colors.green,
+      duration: Duration(seconds: 5),
+      action: SnackBarAction(
+        label: 'VIEW',
+        textColor: Colors.white,
+        onPressed: () {
+          // Navigate to incident details
+          // Implementation in parent widget
+        },
+      ),
+    );
+
+    ScaffoldMessenger.of(context).showSnackBar(snackBar);
+  }
+  
+  // Helper method to get color for notification priority
+  Color _getPriorityColor(String priority) {
+    switch (priority.toLowerCase()) {
+      case 'high':
+        return Colors.red.shade100;
+      case 'medium':
+        return Colors.orange.shade100;
+      case 'low':
+        return Colors.green.shade100;
+      default:
+        return Colors.grey.shade100;
+    }
+  }
+
+  // Helper method to get text color for notification priority
+  Color _getPriorityTextColor(String priority) {
+    switch (priority.toLowerCase()) {
+      case 'high':
+        return Colors.red;
+      case 'medium':
+        return Colors.orange;
+      case 'low':
+        return Colors.green;
+      default:
+        return Colors.grey;
     }
   }
   

@@ -48,6 +48,10 @@ final NotificationService _notificationService = NotificationService();
   String? _currentUserName;
   bool _isRefreshing = false;
 Map<String, bool> processedIncidents = {}; // Track processed incidents
+List<Map<String, dynamic>> notifications = [];
+int unreadNotifications = 0;
+DateTime? lastFetchTime;
+
 
   // Dashboard data from database
   int activeCase = 0;
@@ -57,9 +61,7 @@ Map<String, bool> processedIncidents = {}; // Track processed incidents
   int responseRateValue = 92; // Default fallback value
   // Add right after your existing variables in _AdminDashboardState class
 // Notification related variables
-List<Map<String, dynamic>> notifications = [];
-int unreadNotifications = 0;
-DateTime? lastFetchTime;
+
   
   List<Map<String, dynamic>> recentReports = [];
   List<Map<String, dynamic>> recentActivities = [];
@@ -67,34 +69,34 @@ DateTime? lastFetchTime;
   String? _selectedStationId;
   List<Map<String, dynamic>> _policeStations = [];
   
- @override
+// In initState, make sure we're setting up listeners correctly
+@override
 void initState() {
   super.initState();
   
   // Get current user first, then initialize other components
   _getCurrentUser().then((_) {
     // After getting user info, fetch dashboard data
-      _fetchPoliceStations();
+    _fetchPoliceStations();
     _fetchDashboardData();
-    
-    // Set up notification listener with station filtering if not central admin
-    if (!_isCentralAdmin && _currentUserStationId != null) {
-      _notificationService.startIncidentMonitoring(
-        interval: const Duration(seconds: 15),
-        onNewIncidents: (newIncidents) {
-          if (newIncidents.isNotEmpty) {
-            _processNewIncidents(newIncidents);
-          }
-        },
-        stationId: _currentUserStationId, // Filter notifications by station
-      );
-    } else {
-      // Central admin gets all notifications
-      _setupNotificationListener();
-    }
     
     // Load stored notifications
     _loadNotificationsState();
+    
+    // Debugging
+    print('Setting up notification monitoring. isCentralAdmin: $_isCentralAdmin, stationId: $_currentUserStationId');
+    
+    // Set up notification listener with station filtering
+    _notificationService.startIncidentMonitoring(
+      interval: const Duration(seconds: 15),
+      onNewIncidents: (newIncidents) {
+        if (newIncidents.isNotEmpty) {
+          print('Received ${newIncidents.length} new incidents to process');
+          _processNewIncidents(newIncidents);
+        }
+      },
+      stationId: _isCentralAdmin ? null : _currentUserStationId, // Only filter by station for non-central admins
+    );
   });
 }
 Future<void> _getCurrentUser() async {
@@ -205,6 +207,7 @@ Future<void> _fetchPoliceStations() async {
 }
 
   
+// Show notifications dialog
 void _showNotificationsDialog() {
   showDialog(
     context: context,
@@ -250,7 +253,7 @@ void _showNotificationsDialog() {
                     ),
                     subtitle: Text(notification['message']),
                     trailing: Text(notification['time']),
-                 onTap: () async {
+                    onTap: () async {
                       // Mark notification as read locally
                       setState(() {
                         notifications[index]['read'] = true;
@@ -337,6 +340,7 @@ void _showNotificationsDialog() {
     ),
   );
 }
+// Save notifications state to persistent storage
 Future<void> _saveNotificationsState() async {
   try {
     final prefs = await SharedPreferences.getInstance();
@@ -356,12 +360,11 @@ Future<void> _saveNotificationsState() async {
     
     // Save unread count
     await prefs.setInt('unread_notifications', unreadNotifications);
-    
-    print('Saved ${notifications.length} notifications to storage');
   } catch (e) {
     print('Error saving notifications state: $e');
   }
 }
+// Load notifications state from persistent storage
 Future<void> _loadNotificationsState() async {
   try {
     final prefs = await SharedPreferences.getInstance();
@@ -375,7 +378,6 @@ Future<void> _loadNotificationsState() async {
           notifications = decodedList.map((item) => Map<String, dynamic>.from(item)).toList();
           unreadNotifications = prefs.getInt('unread_notifications') ?? 0;
         });
-        print('Loaded ${notifications.length} notifications from storage');
       } catch (decodeError) {
         print('Error decoding stored notifications: $decodeError');
         // Reset if there's a decode error
@@ -385,6 +387,9 @@ Future<void> _loadNotificationsState() async {
         });
       }
     }
+    
+    // Also load processed incidents
+    await _loadProcessedIncidents();
   } catch (e) {
     print('Error loading notifications state: $e');
   }
@@ -401,7 +406,7 @@ void _setupNotificationListener() {
         final filteredIncidents = _isCentralAdmin 
             ? newIncidents 
             : newIncidents.where((incident) => 
-                incident['station_id'] == _currentUserStationId).toList();
+                incident['police_station_id'] == _currentUserStationId).toList();
                 
         if (filteredIncidents.isNotEmpty) {
           _processNewIncidents(filteredIncidents);
@@ -418,12 +423,12 @@ bool _hasPendingCriticalCases() {
 }
 
 // Check if there are new reports that haven't been viewed
+// Helper method to check for unread reports
 bool _hasNewUnreadReports() {
   // Check for reports that haven't been processed
   return recentReports.any((report) => 
     !processedIncidents.containsKey(report['id'].toString()));
 }
-
 // Calculate actual response rate based on pending vs total cases
 String _calculateResponseRate() {
   // Count total incidents and non-pending incidents
@@ -468,8 +473,16 @@ Color _getResponseRateColor() {
     return Colors.red;
   }
 }
-// Enhanced report item with unread indicator
+Future<void> _saveProcessedIncidents() async {
+  try {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString('processed_incidents', jsonEncode(processedIncidents));
+  } catch (e) {
+    print('Error saving processed incidents: $e');
+  }
+}
 Widget _buildReportItem(Map<String, dynamic> report) {
+  // Check if this report has been processed (viewed)
   final bool isUnread = !processedIncidents.containsKey(report['id'].toString());
   
   return InkWell(
@@ -492,6 +505,16 @@ Widget _buildReportItem(Map<String, dynamic> report) {
           _saveProcessedIncidents();
           // Refresh dashboard data
           _fetchDashboardData();
+          
+          // Also update notification state if present
+          final notificationIndex = notifications.indexWhere((n) => n['id'] == report['id']);
+          if (notificationIndex >= 0) {
+            setState(() {
+              notifications[notificationIndex]['read'] = true;
+              unreadNotifications = notifications.where((n) => n['read'] == false).length;
+            });
+            _saveNotificationsState();
+          }
         }
       });
     },
@@ -505,6 +528,7 @@ Widget _buildReportItem(Map<String, dynamic> report) {
       ),
       child: Row(
         children: [
+          // Unread indicator dot
           if (isUnread)
             Container(
               width: 8,
@@ -565,53 +589,17 @@ Widget _buildReportItem(Map<String, dynamic> report) {
     ),
   );
 }
-void _processNewIncidents(List<Map<String, dynamic>> newIncidents) async {
-  if (newIncidents.isEmpty) return;
-  
-  bool shouldShowNotification = false;
-  Map<String, dynamic>? highestPriorityIncident;
-
-  for (var incident in newIncidents) {
-    final String reportId = incident['id'].toString();
-    if (processedIncidents[reportId] == true) continue;
-    
-    processedIncidents[reportId] = true;
-    final String priority = _notificationService.getIncidentPriority(incident['incident_type']);
-    
-    // Track highest priority incident
-    if (highestPriorityIncident == null || 
-        _isHigherPriority(priority, highestPriorityIncident['priority'])) {
-      highestPriorityIncident = {
-        ...incident,
-        'priority': priority,
-        'time': DateFormat('HH:mm').format(DateTime.parse(incident['created_at']))
-      };
-    }
-    
-    shouldShowNotification = true;
-  }
-
-  if (shouldShowNotification && highestPriorityIncident != null) {
-    _showNewIncidentNotification(highestPriorityIncident!);
-  }
-  
-  await _saveProcessedIncidents();
-  _fetchDashboardData();
-}
-
 bool _isHigherPriority(String newPriority, String currentPriority) {
   const priorityOrder = {'High': 3, 'Medium': 2, 'Low': 1};
-  return priorityOrder[newPriority]! > priorityOrder[currentPriority]!;
+  final newValue = priorityOrder[newPriority] ?? 0;
+  final currentValue = priorityOrder[currentPriority] ?? 0;
+  return newValue > currentValue;
 }
 
-Future<void> _saveProcessedIncidents() async {
-  final prefs = await SharedPreferences.getInstance();
-  await prefs.setString('processed_incidents', jsonEncode(processedIncidents));
-}
 void _showNewIncidentNotification(Map<String, dynamic> incident) {
-  final incidentType = incident['incident_type'];
-  final district = incident['district'] ?? 'Unknown District';
-  final priority = incident['priority'];
+  final incidentType = incident['incident_type'] ?? 'Unknown Incident';
+  final district = incident['district'] ?? 'Unknown Location';
+  final priority = incident['priority'] ?? 'Low';
   
   final snackBar = SnackBar(
     content: Row(
@@ -640,25 +628,156 @@ void _showNewIncidentNotification(Map<String, dynamic> incident) {
               incidentId: incident['id'].toString(),
             ),
           ),
-        );
+        ).then((_) {
+          // Mark as read when returning
+          _markIncidentAsRead(incident['id'].toString());
+        });
       },
     ),
   );
 
-  ScaffoldMessenger.of(context).showSnackBar(snackBar);
+  if (mounted) {
+    ScaffoldMessenger.of(context).showSnackBar(snackBar);
+  }
+}
+
+
+void _processNewIncidents(List<Map<String, dynamic>> newIncidents) async {
+  if (newIncidents.isEmpty) return;
   
-  // Also add to notifications list
+  bool shouldShowNotification = false;
+  Map<String, dynamic>? highestPriorityIncident;
+
   setState(() {
-    notifications.insert(0, {
-      'id': incident['id'],
-      'title': 'New $incidentType',
-      'message': 'Reported in $district',
-      'time': incident['time'],
-      'read': false,
-      'priority': priority,
-    });
-    unreadNotifications++;
+    for (var incident in newIncidents) {
+      // Ensure the ID exists and convert to string
+      final String reportId = incident['id']?.toString() ?? '';
+      if (reportId.isEmpty) continue;
+      
+      // Skip if already processed
+      if (processedIncidents[reportId] == true) continue;
+      
+      // Important: Make sure we're using the correct column name from the database
+      // Check if this incident belongs to the admin's station
+      final String? incidentStationId = incident['police_station_id']?.toString();
+      
+      // For non-central admins, filter by station
+      if (!_isCentralAdmin && _currentUserStationId != null) {
+        // Skip if this incident is not for this admin's station
+        if (incidentStationId != _currentUserStationId) {
+          print('Skipping notification for incident $reportId - belongs to station $incidentStationId, not $_currentUserStationId');
+          continue;
+        }
+      }
+      
+      // Debugging
+      print('Processing notification for incident $reportId with station ID: $incidentStationId');
+      
+      // Mark as processed
+      processedIncidents[reportId] = true;
+      
+      // Determine priority
+      final String priority = _notificationService.getIncidentPriority(incident['incident_type'] ?? '');
+      
+      // Format time for display
+      final String timeString = incident['created_at'] != null 
+          ? DateFormat('HH:mm').format(DateTime.parse(incident['created_at']))
+          : DateFormat('HH:mm').format(DateTime.now());
+      
+      // Track highest priority incident for toast notification
+      if (highestPriorityIncident == null || 
+          _isHigherPriority(priority, highestPriorityIncident!['priority'] ?? 'Low')) {
+        highestPriorityIncident = {
+          ...incident,
+          'priority': priority,
+          'time': timeString
+        };
+      }
+      
+      // Add to notifications list
+      notifications.insert(0, {
+        'id': reportId,
+        'title': 'New ${priority == 'High' ? '⚠️ ' : ''}${incident['incident_type'] ?? 'Incident'}',
+        'message': 'Reported in ${incident['district'] ?? 'Unknown'}\nStatus: ${incident['status'] ?? 'Pending'}',
+        'time': timeString,
+        'read': false,
+        'priority': priority,
+      });
+      
+      // Increment unread count
+      unreadNotifications++;
+      
+      shouldShowNotification = true;
+    }
   });
+
+  // Show toast notification for highest priority incident
+  if (shouldShowNotification && highestPriorityIncident != null && mounted) {
+    _showNewIncidentNotification(highestPriorityIncident!);
+  }
+  
+  // Save notifications state
+  await _saveNotificationsState();
+  await _saveProcessedIncidents();
+  
+  // Refresh dashboard data
+  _fetchDashboardData();
+}
+
+// Mark a specific incident as read
+Future<void> _markIncidentAsRead(String incidentId) async {
+  setState(() {
+    // Find and mark as read in our local notifications list
+    final index = notifications.indexWhere((n) => n['id'] == incidentId);
+    if (index >= 0 && notifications[index]['read'] != true) {
+      notifications[index]['read'] = true;
+      unreadNotifications = notifications.where((n) => n['read'] == false).length;
+    }
+  });
+  
+  // Save updated notification state
+  await _saveNotificationsState();
+  
+  // Mark as read in database if needed
+  try {
+    final supabase = Supabase.instance.client;
+    final user = supabase.auth.currentUser;
+    
+    if (user != null) {
+      await supabase
+          .from('notifications')
+          .update({'is_read': true})
+          .eq('user_id', user.id)
+          .eq('incident_id', incidentId);
+    }
+  } catch (e) {
+    print('Error marking notification as read: $e');
+  }
+}
+
+// Load processed incidents from persistent storage
+Future<void> _loadProcessedIncidents() async {
+  try {
+    final prefs = await SharedPreferences.getInstance();
+    final String? stored = prefs.getString('processed_incidents');
+    
+    if (stored != null && stored.isNotEmpty) {
+      try {
+        final Map<String, dynamic> decoded = jsonDecode(stored);
+        setState(() {
+          processedIncidents.clear();
+          decoded.forEach((key, value) {
+            processedIncidents[key] = value as bool;
+          });
+        });
+      } catch (e) {
+        print('Error decoding processed incidents: $e');
+        processedIncidents.clear();
+      }
+    }
+  } catch (e) {
+    print('Error loading processed incidents: $e');
+  }
 }
 
 @override
@@ -1070,31 +1189,34 @@ Future<void> _addAdmin() async {
     }
   }
 }
-  Color _getPriorityColor(String priority) {
-    switch (priority.toLowerCase()) {
-      case 'high':
-        return Colors.red.shade100;
-      case 'medium':
-        return Colors.orange.shade100;
-      case 'low':
-        return Colors.green.shade100;
-      default:
-        return Colors.grey.shade100;
-    }
+// Helper method to get color based on priority
+Color _getPriorityColor(String priority) {
+  switch (priority.toLowerCase()) {
+    case 'high':
+      return Colors.red.shade100;
+    case 'medium':
+      return Colors.orange.shade100;
+    case 'low':
+      return Colors.green.shade100;
+    default:
+      return Colors.grey.shade100;
   }
+}
 
-  Color _getPriorityTextColor(String priority) {
-    switch (priority.toLowerCase()) {
-      case 'high':
-        return Colors.red;
-      case 'medium':
-        return Colors.orange;
-      case 'low':
-        return Colors.green;
-      default:
-        return Colors.grey;
-    }
+
+// Helper method to get text color based on priority
+Color _getPriorityTextColor(String priority) {
+  switch (priority.toLowerCase()) {
+    case 'high':
+      return Colors.red;
+    case 'medium':
+      return Colors.orange;
+    case 'low':
+      return Colors.green;
+    default:
+      return Colors.grey;
   }
+}
   
   void _exportDistrictActivityMap() async {
     try {
@@ -1286,7 +1408,10 @@ void _showQuickAlertDialog() {
   );
 }
 
- @override
+// Code to implement notification badge in AppBar
+
+// In your _AdminDashboardState class, modify the build method:
+@override
 Widget build(BuildContext context) {
   return Scaffold(
     appBar: AppBar(
@@ -1971,109 +2096,108 @@ Widget _buildDashboard() {
                           ),
                         ),
 
-                        // Recent Reports Section
-                        Container(
-                          width: double.infinity,
-                          padding: const EdgeInsets.all(16),
-                          decoration: BoxDecoration(
-                            color: Colors.white,
-                            borderRadius: BorderRadius.circular(12),
-                            boxShadow: [
-                              BoxShadow(
-                                color: Colors.grey.shade300,
-                                blurRadius: 4,
-                                offset: const Offset(0, 2),
-                              ),
-                            ],
-                          ),
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              Row(
-                                mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                                children: [
-                                  Row(
-                                    children: [
-                                      const Text(
-                                        'Recent Reports',
-                                        style: TextStyle(
-                                          fontSize: 18,
-                                          fontWeight: FontWeight.bold,
-                                        ),
-                                      ),
-                                      if (_isRefreshing)
-                                        Padding(
-                                          padding: const EdgeInsets.only(left: 8),
-                                          child: SizedBox(
-                                            width: 16,
-                                            height: 16,
-                                            child: CircularProgressIndicator(
-                                              strokeWidth: 2,
-                                              valueColor: AlwaysStoppedAnimation<Color>(Colors.blue.shade300),
-                                            ),
+                          Container(
+                            width: double.infinity,
+                            padding: const EdgeInsets.all(16),
+                            decoration: BoxDecoration(
+                              color: Colors.white,
+                              borderRadius: BorderRadius.circular(12),
+                              boxShadow: [
+                                BoxShadow(
+                                  color: Colors.grey.shade300,
+                                  blurRadius: 4,
+                                  offset: const Offset(0, 2),
+                                ),
+                              ],
+                            ),
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Row(
+                                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                                  children: [
+                                    Row(
+                                      children: [
+                                        const Text(
+                                          'Recent Reports',
+                                          style: TextStyle(
+                                            fontSize: 18,
+                                            fontWeight: FontWeight.bold,
                                           ),
                                         ),
-                                      // New indicator
-                                      if (_hasNewUnreadReports())
-                                        Padding(
-                                          padding: const EdgeInsets.only(left: 8),
-                                          child: Container(
-                                            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                                            decoration: BoxDecoration(
-                                              color: Colors.orange,
-                                              borderRadius: BorderRadius.circular(12),
-                                            ),
-                                            child: const Text(
-                                              'NEW',
-                                              style: TextStyle(
-                                                color: Colors.white,
-                                                fontSize: 10,
-                                                fontWeight: FontWeight.bold,
+                                        if (_isRefreshing)
+                                          Padding(
+                                            padding: const EdgeInsets.only(left: 8),
+                                            child: SizedBox(
+                                              width: 16,
+                                              height: 16,
+                                              child: CircularProgressIndicator(
+                                                strokeWidth: 2,
+                                                valueColor: AlwaysStoppedAnimation<Color>(Colors.blue.shade300),
                                               ),
                                             ),
                                           ),
+                                        // New indicator for unread reports
+                                        if (_hasNewUnreadReports())
+                                          Padding(
+                                            padding: const EdgeInsets.only(left: 8),
+                                            child: Container(
+                                              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                                              decoration: BoxDecoration(
+                                                color: Colors.orange,
+                                                borderRadius: BorderRadius.circular(12),
+                                              ),
+                                              child: const Text(
+                                                'NEW',
+                                                style: TextStyle(
+                                                  color: Colors.white,
+                                                  fontSize: 10,
+                                                  fontWeight: FontWeight.bold,
+                                                ),
+                                              ),
+                                            ),
+                                          ),
+                                      ],
+                                    ),
+                                    Container(
+                                      width: 200,
+                                      height: 40,
+                                      decoration: BoxDecoration(
+                                        color: Colors.grey.shade100,
+                                        borderRadius: BorderRadius.circular(20),
+                                      ),
+                                      child: TextField(
+                                        controller: _searchController,
+                                        decoration: const InputDecoration(
+                                          hintText: 'Search reports...',
+                                          prefixIcon: Icon(Icons.search),
+                                          border: InputBorder.none,
+                                          contentPadding: EdgeInsets.symmetric(vertical: 10),
                                         ),
-                                    ],
-                                  ),
-                                  Container(
-                                    width: 200,
-                                    height: 40,
-                                    decoration: BoxDecoration(
-                                      color: Colors.grey.shade100,
-                                      borderRadius: BorderRadius.circular(20),
-                                    ),
-                                    child: TextField(
-                                      controller: _searchController,
-                                      decoration: const InputDecoration(
-                                        hintText: 'Search reports...',
-                                        prefixIcon: Icon(Icons.search),
-                                        border: InputBorder.none,
-                                        contentPadding: EdgeInsets.symmetric(vertical: 10),
-                                      ),
-                                      onChanged: _filterReports,
-                                    ),
-                                  ),
-                                ],
-                              ),
-                              const SizedBox(height: 16),
-                              if (filteredReports.isEmpty)
-                                const Padding(
-                                  padding: EdgeInsets.symmetric(vertical: 20),
-                                  child: Center(
-                                    child: Text(
-                                      'No recent reports',
-                                      style: TextStyle(
-                                        color: Colors.grey,
-                                        fontSize: 16,
+                                        onChanged: _filterReports,
                                       ),
                                     ),
-                                  ),
-                                )
-                              else
-                                ...filteredReports.map((report) => _buildReportItem(report)).toList(),
-                            ],
+                                  ],
+                                ),
+                                const SizedBox(height: 16),
+                                if (filteredReports.isEmpty)
+                                  const Padding(
+                                    padding: EdgeInsets.symmetric(vertical: 20),
+                                    child: Center(
+                                      child: Text(
+                                        'No recent reports',
+                                        style: TextStyle(
+                                          color: Colors.grey,
+                                          fontSize: 16,
+                                        ),
+                                      ),
+                                    ),
+                                  )
+                                else
+                                  ...filteredReports.map((report) => _buildReportItem(report)).toList(),
+                              ],
+                            ),
                           ),
-                        ),
 
                         // Recent Activities Section
                         const SizedBox(height: 20),
