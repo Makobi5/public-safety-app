@@ -97,6 +97,7 @@ void initState() {
       },
       stationId: _isCentralAdmin ? null : _currentUserStationId, // Only filter by station for non-central admins
     );
+    _setupNotificationListener();
   });
 }
 Future<void> _getCurrentUser() async {
@@ -397,22 +398,14 @@ Future<void> _loadNotificationsState() async {
 
 // Modify _setupNotificationListener to filter by station
 void _setupNotificationListener() {
-  // Start monitoring for new incidents
   _notificationService.startIncidentMonitoring(
-    interval: const Duration(seconds: 15), // Check every 15 seconds
+    interval: const Duration(seconds: 15),
     onNewIncidents: (newIncidents) {
       if (newIncidents.isNotEmpty) {
-        // Filter incidents if not central admin
-        final filteredIncidents = _isCentralAdmin 
-            ? newIncidents 
-            : newIncidents.where((incident) => 
-                incident['police_station_id'] == _currentUserStationId).toList();
-                
-        if (filteredIncidents.isNotEmpty) {
-          _processNewIncidents(filteredIncidents);
-        }
+        _processNewIncidents(newIncidents);
       }
     },
+    stationId: _isCentralAdmin ? null : _currentUserStationId,
   );
 }
 // Check if there are pending critical cases that need attention
@@ -723,6 +716,124 @@ void _processNewIncidents(List<Map<String, dynamic>> newIncidents) async {
   // Refresh dashboard data
   _fetchDashboardData();
 }
+
+void _forceNotifyMostRecent() async {
+  try {
+    final supabase = Supabase.instance.client;
+    
+    // Show message that we're checking
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text('Searching for most recent incident...'))
+    );
+    
+    // Query with no time constraints
+    final response = await supabase
+        .from('incidents')
+        .select()
+        .order('created_at', ascending: false)
+        .limit(1);
+    
+    // Debug output    
+    debugPrint('Recent incident query response: $response');
+    
+    if (response != null && response is List && response.isNotEmpty) {
+      final recentIncident = response[0];
+      final id = recentIncident['id'].toString();
+      final createdAt = recentIncident['created_at'];
+      
+      debugPrint('Found incident $id created at $createdAt');
+      
+      // Clear processed incidents completely
+      _notificationService.resetAllIncidentTracking();
+      
+      // Directly create notification
+      final user = supabase.auth.currentUser;
+      if (user != null) {
+        await supabase.from('notifications').insert({
+          'user_id': user.id,
+          'title': 'New ${recentIncident['incident_type']}',
+          'message': 'Reported in ${recentIncident['district']}',
+          'is_read': false,
+          'priority': _notificationService.getIncidentPriority(recentIncident['incident_type']),
+          'incident_id': id,
+          'created_at': DateTime.now().toIso8601String(),
+        });
+        
+        debugPrint('Directly inserted notification for incident $id');
+        
+        // Force refresh notifications
+        await _loadNotificationsState();
+        
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Notification created for incident $id'),
+            backgroundColor: Colors.green,
+          ),
+        );
+      }
+    } else {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('No incidents found in database'),
+          backgroundColor: Colors.red,
+        ),
+      );
+    }
+  } catch (e) {
+    debugPrint('Error in force notify: $e');
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text('Error: $e'),
+        backgroundColor: Colors.red,
+      ),
+    );
+  }
+}
+
+void _forceCheckNotifications() async {
+  try {
+    final supabase = Supabase.instance.client;
+    final user = supabase.auth.currentUser;
+    
+    if (user != null) {
+      // Force reset the notification check time to get recent incidents
+      _notificationService.resetAllIncidentTracking();
+      
+      // Manual check for new incidents
+      final incidents = await _notificationService.checkForNewIncidents(
+        stationId: _isCentralAdmin ? null : _currentUserStationId
+      );
+      
+      if (incidents.isEmpty) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('No new incidents found'),
+            backgroundColor: Colors.orange,
+          ),
+        );
+      } else {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Found ${incidents.length} incidents, processing...'),
+            backgroundColor: Colors.blue,
+          ),
+        );
+        
+        // Process these incidents
+        _processNewIncidents(incidents);
+      }
+    }
+  } catch (e) {
+    debugPrint('Error in force check: $e');
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text('Error checking notifications: $e'),
+        backgroundColor: Colors.red,
+      ),
+    );
+  }
+}
+
 
 // Mark a specific incident as read
 Future<void> _markIncidentAsRead(String incidentId) async {
@@ -1475,6 +1586,31 @@ Widget build(BuildContext context) {
               ),
           ],
         ),
+        // DEBUG button
+// Replace existing force check button
+            IconButton(
+              icon: const Icon(Icons.bug_report, color: Colors.yellow),
+              onPressed: () {
+                // Force reset ALL tracking
+                _notificationService.forceResetTracking();
+                
+                // Show confirmation
+                ScaffoldMessenger.of(context).showSnackBar(
+                  SnackBar(
+                    content: Text('Completely reset notification tracking!'),
+                    backgroundColor: Colors.deepPurple,
+                    duration: Duration(seconds: 1),
+                  ),
+                );
+                
+                // Wait a second then force check
+                Future.delayed(Duration(seconds: 1), () {
+                  _forceCheckNotifications();
+                });
+              },
+              tooltip: 'Reset & Force Check',
+            ),
+
         // Refresh button with loading indicator
         IconButton(
           icon: _isRefreshing 

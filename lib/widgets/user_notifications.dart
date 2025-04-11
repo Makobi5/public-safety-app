@@ -39,7 +39,7 @@ class _UserNotificationsState extends State<UserNotifications> {
     try {
       final supabase = Supabase.instance.client;
       final userId = supabase.auth.currentUser!.id;
-     final notifications = await _notificationService.getUserNotifications(userId: userId);
+     final notifications = await _notificationService.getUserNotifications(userId);
 
       setState(() {
         _notifications = notifications;

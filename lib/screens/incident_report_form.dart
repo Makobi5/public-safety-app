@@ -21,6 +21,7 @@ import 'package:google_maps_webservice/places.dart';
 import '/config/api_keys.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
 import 'package:google_maps_webservice/geocoding.dart' as gmaps;
+import '../service/notification_service.dart';
 
 class IncidentReportFormPage extends StatefulWidget {
   const IncidentReportFormPage({Key? key}) : super(key: key);
@@ -56,6 +57,7 @@ class _IncidentReportFormPageState extends State<IncidentReportFormPage> {
   String? _detectedVillage;
   final _additionalLocationController = TextEditingController();
   final _landmarkController = TextEditingController();
+  final NotificationService _notificationService = NotificationService();
   
   @override
   void dispose() {
@@ -1234,7 +1236,7 @@ Widget _buildLocationSection() {
 
 void _submitReport() async {
   if (!_formKey.currentState!.validate()) return;
-
+  
   // Check if location is captured
   if (_currentPosition == null) {
     ScaffoldMessenger.of(context).showSnackBar(
@@ -1278,25 +1280,63 @@ void _submitReport() async {
     // 2. Prepare incident data
     final incidentData = await _prepareIncidentData(fileUrls);
     
-    // 3. Submit to database - Updated Supabase syntax
-    final response = await Supabase.instance.client
-        .from('incidents')
-        .insert(incidentData);
-
-    // 4. Check for errors
-    if (response.error != null) {
-      throw Exception(response.error!.message);
+    // 3. Submit to database with proper error handling
+    try {
+      final response = await Supabase.instance.client
+          .from('incidents')
+          .insert(incidentData)
+          .select();
+      
+      // Process notification for the new incident
+      try {
+        // Check if we have a valid response
+        if (response != null && response is List && response.isNotEmpty) {
+          final incidentRecord = response[0];
+          
+          debugPrint('Processing notification for new incident: ${incidentRecord['id']}');
+          
+          // Trigger notification processing
+          await _notificationService.processNewIncident(incidentRecord);
+          
+          debugPrint('Notification processed successfully');
+        } else {
+          debugPrint('Warning: No incident data returned after insert');
+        }
+      } catch (notificationError) {
+        // Log notification error but don't fail the submission
+        debugPrint('Error processing notification: $notificationError');
+      }
+      
+      // Handle submission success
+      _handleSubmissionSuccess();
+    } catch (dbError) {
+      // Handle database-specific errors
+      throw dbError; // Re-throw to be caught by outer catch
     }
-
-    // 5. Handle success
-    _handleSubmissionSuccess();
-    
   } catch (e) {
     // Handle errors
     if (e.toString().contains('NoSuchMethodError') && 
         e.toString().contains('error')) {
       // False positive case - submission actually worked
       _handleSubmissionSuccess();
+      
+      // Try to process notification in this case too
+      try {
+        // Need to fetch the newly created incident since we don't have its ID
+        final recentIncident = await Supabase.instance.client
+            .from('incidents')
+            .select()
+            .order('created_at', ascending: false)
+            .limit(1)
+            .single();
+            
+        if (recentIncident != null) {
+          await _notificationService.processNewIncident(recentIncident);
+          debugPrint('Notification processed for false-positive case');
+        }
+      } catch (notificationError) {
+        debugPrint('Error processing notification in false-positive case: $notificationError');
+      }
     } else {
       _handleSubmissionError(e is Exception ? e : Exception(e.toString()));
     }
@@ -1304,6 +1344,23 @@ void _submitReport() async {
     if (mounted) {
       setState(() => _isUploading = false);
     }
+  }
+}
+
+// Add this helper method to your class
+Future<Map<String, dynamic>?> _getLatestIncident() async {
+  try {
+    final response = await Supabase.instance.client
+        .from('incidents')
+        .select()
+        .order('created_at', ascending: false)
+        .limit(1)
+        .single();
+        
+    return response;
+  } catch (e) {
+    debugPrint('Error fetching latest incident: $e');
+    return null;
   }
 }
 Future<List<String>> _uploadFiles() async {
