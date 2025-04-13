@@ -15,6 +15,17 @@ import 'package:audio_waveforms/audio_waveforms.dart';
 import 'package:flick_video_player/flick_video_player.dart';
 import 'package:visibility_detector/visibility_detector.dart';
 import '../service/access_control_service.dart';
+import 'package:http/http.dart' as http;
+import 'package:permission_handler/permission_handler.dart';
+import 'package:path/path.dart' as path;
+import 'package:fluttertoast/fluttertoast.dart';
+import 'package:gallery_saver/gallery_saver.dart';
+import 'dart:io';
+import 'package:flutter/foundation.dart' show kIsWeb;
+import 'package:flutter/material.dart';
+import 'dart:html' as html;
+import 'package:dio/dio.dart';
+import 'dart:js' as js;
 
 
 class CaseDetailScreen extends StatefulWidget {
@@ -96,12 +107,17 @@ bool _checkingAccess = true;
       'color': Colors.red,
     },
   ];
-
 @override
 void initState() {
   super.initState();
-    _checkAccess();
+  _checkAccess();
+  
   WidgetsBinding.instance.addPostFrameCallback((_) async {
+    // Clear existing SnackBars when the screen loads
+    if (mounted) {
+      ScaffoldMessenger.of(context).clearSnackBars();
+    }
+    
     try {
       await _fetchCaseDetails();
       if (!mounted) return;
@@ -188,16 +204,24 @@ void _showMediaDialog(Map<String, dynamic> file) {
           : _buildMediaContent(file),
       ),
       actions: [
-        // Add download button for videos
+        // Add download button for videos with proper functionality
         if (file['type'] == 'video')
-          TextButton(
-            onPressed: () {
-              // Implement download functionality here if needed
-              ScaffoldMessenger.of(context).showSnackBar(
-                SnackBar(content: Text('Download functionality not implemented')),
-              );
-            },
-            child: Text('Download'),
+          ElevatedButton.icon(
+            onPressed: _isSubmitting ? null : () => _handleVideoDownload(file['url']),
+            style: ElevatedButton.styleFrom(
+              backgroundColor: const Color(0xFF003366),
+            ),
+            icon: _isSubmitting 
+              ? SizedBox(
+                  height: 16,
+                  width: 16,
+                  child: CircularProgressIndicator(
+                    color: Colors.white,
+                    strokeWidth: 2,
+                  ),
+                )
+              : Icon(Icons.download, size: 16),
+            label: Text(_isSubmitting ? 'Downloading...' : 'Download'),
           ),
         TextButton(
           onPressed: () {
@@ -210,32 +234,129 @@ void _showMediaDialog(Map<String, dynamic> file) {
   );
 }
 
-void _showMediaDialogContent(Map<String, dynamic> file) {
-  showDialog(
-    context: context,
-    builder: (context) => AlertDialog(
-      contentPadding: EdgeInsets.zero,
-      content: Container(
-        width: MediaQuery.of(context).size.width * 0.8,
-        height: file['type'] == 'video' ? 300 : 400,
-        child: file['type'] == 'video' 
-            ? _buildVideoPlayer(file['url'])
-            : _buildMediaContent(file),
-      ),
-      actions: [
-        TextButton(
-          onPressed: () {
-            if (file['type'] == 'video') {
-              _videoPlayerController?.pause();
-            }
-            Navigator.pop(context);
-          },
-          child: const Text('Close'),
-        ),
-      ],
-    ),
-  );
-}
+// Add this method to your _CaseDetailScreenState class
+
+
+
+
+
+// Future<void> _downloadVideoWithProgress(String url) async {
+//   try {
+//     // Request storage permission
+//     var status = await Permission.storage.request();
+//     if (!status.isGranted) {
+//       ScaffoldMessenger.of(context).showSnackBar(
+//         SnackBar(content: Text('Storage permission denied')),
+//       );
+//       return;
+//     }
+    
+//     // Show download progress dialog
+//     double progressValue = 0.0;
+    
+//     showDialog(
+//       context: context,
+//       barrierDismissible: false,
+//       builder: (context) => StatefulBuilder(
+//         builder: (context, setState) {
+//           return AlertDialog(
+//             title: Text('Downloading Video'),
+//             content: Column(
+//               mainAxisSize: MainAxisSize.min,
+//               children: [
+//                 LinearProgressIndicator(value: progressValue),
+//                 SizedBox(height: 16),
+//                 Text('${(progressValue * 100).toStringAsFixed(0)}%'),
+//               ],
+//             ),
+//             actions: [
+//               TextButton(
+//                 onPressed: () {
+//                   Navigator.pop(context);
+//                   // Cancel download logic here if needed
+//                 },
+//                 child: Text('Cancel'),
+//               ),
+//             ],
+//           );
+//         },
+//       ),
+//     );
+    
+//     // Get file name from URL
+//     final fileName = url.split('/').last;
+    
+//     // Get temporary directory
+//     final tempDir = await getTemporaryDirectory();
+//     final filePath = '${tempDir.path}/$fileName';
+    
+//     // Create Dio instance for download with progress
+//     final dio = Dio();
+    
+//     await dio.download(
+//       url,
+//       filePath,
+//       onReceiveProgress: (received, total) {
+//         if (total != -1) {
+//           // Update progress
+//           if (context.mounted) {
+//             final newProgress = received / total;
+//             // Use Navigator.of(context).context to update the dialog
+//             Navigator.of(context, rootNavigator: true).pop();
+//             _downloadVideoWithProgress(url); // Reopen with new progress
+//             progressValue = newProgress;
+//           }
+//         }
+//       },
+//     );
+    
+//     // Close progress dialog
+//     if (context.mounted) {
+//       Navigator.of(context, rootNavigator: true).pop();
+//     }
+    
+//     // Save to gallery
+//     final result = await GallerySaver.saveVideo(filePath);
+    
+//     // Show success message
+//     if (result == true) {
+//       ScaffoldMessenger.of(context).showSnackBar(
+//         SnackBar(
+//           content: Text('Video saved to gallery'),
+//           backgroundColor: Colors.green,
+//           duration: Duration(seconds: 2),
+//         ),
+//       );
+//     } else {
+//       ScaffoldMessenger.of(context).showSnackBar(
+//         SnackBar(
+//           content: Text('Failed to save video to gallery'),
+//           backgroundColor: Colors.red,
+//           duration: Duration(seconds: 2),
+//         ),
+//       );
+//     }
+//   } catch (e) {
+//     print('Error downloading video: $e');
+//     if (context.mounted) {
+//       // Close progress dialog if open
+//       Navigator.of(context, rootNavigator: true).pop();
+      
+//       // Show error message
+//       ScaffoldMessenger.of(context).showSnackBar(
+//         SnackBar(
+//           content: Text('Download failed: ${e.toString()}'),
+//           backgroundColor: Colors.red,
+//         ),
+//       );
+//     }
+//   }
+// }
+
+
+
+
+
   Widget _buildActivityItem(String action, String details, DateTime timestamp) {
   return Row(
     crossAxisAlignment: CrossAxisAlignment.start,
@@ -327,6 +448,231 @@ Future<String?> _getReportedPoliceStationName() async {
     return 'Unknown Station';
   }
 }
+
+// Add this method to your _CaseDetailScreenState class
+// Future<void> _downloadVideo(String url) async {
+//   try {
+//     setState(() {
+//       _isSubmitting = true;
+//     });
+ //   
+//     // Show initial loading toast
+//     Fluttertoast.showToast(
+//       msg: "Starting download...",
+//       toastLength: Toast.LENGTH_SHORT,
+//       gravity: ToastGravity.BOTTOM,
+//     );
+    
+//     // Get file name from URL
+//     final fileName = path.basename(url);
+    
+//     // Request storage permission
+//     var status = await Permission.storage.request();
+//     if (!status.isGranted) {
+//       setState(() {
+//         _isSubmitting = false;
+//       });
+//       Fluttertoast.showToast(
+//         msg: "Storage permission denied",
+//         toastLength: Toast.LENGTH_LONG,
+//         gravity: ToastGravity.BOTTOM,
+//         backgroundColor: Colors.red,
+//       );
+//       return;
+//     }
+    
+//     // Get temporary directory to save file temporarily
+//     final tempDir = await getTemporaryDirectory();
+//     final filePath = '${tempDir.path}/$fileName';
+//     final file = File(filePath);
+    
+//     // Download video file
+//     final response = await http.get(Uri.parse(url));
+//     await file.writeAsBytes(response.bodyBytes);
+    
+//     // Save to gallery using gallery_saver
+//     final result = await GallerySaver.saveVideo(filePath);
+    
+//     setState(() {
+//       _isSubmitting = false;
+//     });
+    
+//     if (result == true) {
+//       Fluttertoast.showToast(
+//         msg: "Video saved to gallery",
+//         toastLength: Toast.LENGTH_LONG,
+//         gravity: ToastGravity.BOTTOM,
+//         backgroundColor: Colors.green,
+//       );
+//     } else {
+//       Fluttertoast.showToast(
+//         msg: "Failed to save video to gallery",
+//         toastLength: Toast.LENGTH_LONG,
+//         gravity: ToastGravity.BOTTOM,
+//         backgroundColor: Colors.red,
+//       );
+//     }
+//   } catch (e) {
+//     setState(() {
+//       _isSubmitting = false;
+//     });
+//     print('Error downloading video: $e');
+//     Fluttertoast.showToast(
+//       msg: "Download failed: ${e.toString()}",
+//       toastLength: Toast.LENGTH_LONG,
+//       gravity: ToastGravity.BOTTOM,
+//       backgroundColor: Colors.red,
+//     );
+//   }
+// }
+
+// // Alternative implementation for web platforms
+// Future<void> _downloadVideoWeb(String url) async {
+//   try {
+//     // Create an anchor element
+//     final anchor = html.AnchorElement(href: url);
+    
+//     // Get the filename from the URL
+//     final fileName = url.split('/').last;
+    
+//     // Set download attribute to suggest filename
+//     anchor.download = fileName;
+    
+//     // Trigger a click
+//     anchor.click();
+//   } catch (e) {
+//     print('Error downloading video (web): $e');
+//     // Show error message
+//     ScaffoldMessenger.of(context).showSnackBar(
+//       SnackBar(content: Text('Download failed: ${e.toString()}')),
+//     );
+//   }
+// }
+// Widget _buildDownloadProgress(double progress) {
+//   return Container(
+//     padding: EdgeInsets.all(16),
+//     child: Column(
+//       mainAxisSize: MainAxisSize.min,
+//       children: [
+//         LinearProgressIndicator(
+//           value: progress,
+//           backgroundColor: Colors.grey[300],
+//           color: const Color(0xFF003366),
+//         ),
+//         SizedBox(height: 8),
+//         Text(
+//           '${(progress * 100).toStringAsFixed(0)}%',
+//           style: TextStyle(fontWeight: FontWeight.bold),
+//         ),
+//       ],
+//     ),
+//   );
+// }
+Future<void> _handleVideoDownload(String url) async {
+  // Check platform and call appropriate method
+  if (kIsWeb) {
+    await _downloadVideoWeb(url);
+  } else {
+    await _downloadVideoWeb(url);
+  }
+}
+
+
+Future<void> _downloadVideoWeb(String url) async {
+  try {
+    setState(() {
+      _isSubmitting = true;
+    });
+    
+    // Simplest approach - create a hidden anchor with download attribute
+    final jsCode = '''
+      (function() {
+        var a = document.createElement('a');
+        a.href = '$url';
+        a.download = '${url.split('/').last.replaceAll("'", "")}';
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+      })();
+    ''';
+    
+    // Execute the JS - make sure 'dart:js' is imported as js
+    // import 'dart:js' as js;
+    js.context.callMethod('eval', [jsCode]);
+    
+    setState(() {
+      _isSubmitting = false;
+    });
+    
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text('Download initiated. If nothing happens, the browser may have blocked automatic downloads.'),
+        backgroundColor: Colors.green,
+        duration: Duration(seconds: 5),
+      ),
+    );
+  } catch (e) {
+    setState(() {
+      _isSubmitting = false;
+    });
+    
+    print('Error starting download: $e');
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text('Download failed: ${e.toString()}'),
+        backgroundColor: Colors.red,
+      ),
+    );
+  }
+}
+
+// Future<void> _downloadVideoSimple(String url) async {
+//   try {
+//     setState(() {
+//       _isSubmitting = true;
+//     });
+    
+//     // Show a snackbar to indicate download has started
+//     ScaffoldMessenger.of(context).showSnackBar(
+//       SnackBar(content: Text('Starting download...')),
+//     );
+    
+//     if (kIsWeb) {
+//       // Web implementation - open in new tab
+//       final anchor = html.AnchorElement(href: url)
+//         ..setAttribute('download', url.split('/').last)
+//         ..setAttribute('target', '_blank'); // Open in new tab
+      
+//       // For Safari/iOS support, create a temporary element
+//       // This forces the browser to treat it as a download
+//       html.document.body?.append(anchor);
+//       anchor.click();
+      
+//       // Remove the element after clicking
+//       Future.delayed(Duration(milliseconds: 100), () {
+//         anchor.remove();
+//       });
+      
+//       setState(() {
+//         _isSubmitting = false;
+//       });
+      
+//       ScaffoldMessenger.of(context).showSnackBar(
+//         SnackBar(
+//           content: Text('Download starting in new tab'),
+//           backgroundColor: Colors.green,
+//         ),
+//       );
+//     } else {
+//       // Mobile implementation remains the same
+//       // ...rest of your mobile implementation
+//     }
+//   } catch (e) {
+//     // Error handling
+//     // ...
+//   }
+// }
+
 
 Widget _buildInfoRow(String label, String value) {
   return Padding(
