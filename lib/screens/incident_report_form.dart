@@ -1397,7 +1397,7 @@ Future<Map<String, dynamic>> _prepareIncidentData(List<String> fileUrls) async {
     'village': _detectedVillage ?? "Unknown Village",
     'latitude': _latitude,
     'longitude': _longitude,
-    'status': _selectedPoliceStationId != null ? 'assigned' : 'submitted',
+    'status': _selectedPoliceStationId != null ? 'pending' : 'submitted',
     'is_anonymous': false,
     'additional_location': _additionalLocationController.text,
     'additional_notes': _additionalNotesController.text,

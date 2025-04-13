@@ -63,6 +63,7 @@ bool _checkingAccess = true;
     'Under Investigation',
     'Action Taken',
     'Resolved',
+    'assigned',
     'Closed',
     'Requires Follow-up',
   ];
