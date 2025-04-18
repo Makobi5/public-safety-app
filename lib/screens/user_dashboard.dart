@@ -6,6 +6,16 @@ import '../service/auth_service.dart';
 import 'incident_report_form.dart';
 import 'report_details_screen.dart'; // New import for report details
 import 'package:flutter/widgets.dart' as widgets;
+import 'package:record/record.dart';
+import 'package:permission_handler/permission_handler.dart';
+import 'package:path_provider/path_provider.dart';
+import 'dart:io';
+import 'package:geocoding/geocoding.dart';
+import 'package:geolocator/geolocator.dart';
+import 'package:flutter/foundation.dart' show kIsWeb;
+import 'package:flutter_sound_web/flutter_sound_web.dart';
+import 'package:flutter_sound_platform_interface/flutter_sound_recorder_platform_interface.dart';
+
 
 class UserDashboard extends StatefulWidget {
   const UserDashboard({Key? key}) : super(key: key);
@@ -24,6 +34,10 @@ class _UserDashboardState extends State<UserDashboard> {
   String _userName = 'User';
   List<Map<String, dynamic>> _activeReports = [];
   final supabase = Supabase.instance.client;
+  bool _isRecording = false;
+  String? _audioPath;
+  final _audioRecorder = Record();
+  
 
   @override
   void initState() {
@@ -66,6 +80,212 @@ class _UserDashboardState extends State<UserDashboard> {
     }
   }
 
+Future<void> _startRecording() async {
+  try {
+    // Check and request permissions
+    if (await Permission.microphone.request().isGranted) {
+      // Try to get storage directory with error handling
+      String filePath;
+      try {
+        Directory appDocDir = await getApplicationDocumentsDirectory();
+        filePath = '${appDocDir.path}/emergency_recording_${DateTime.now().millisecondsSinceEpoch}.aac';
+      } catch (e) {
+        // Fallback to a temporary directory or cache directory
+        print('Error getting application directory: $e');
+        try {
+          // Try using temporary directory instead
+          Directory tempDir = await getTemporaryDirectory();
+          filePath = '${tempDir.path}/emergency_recording_${DateTime.now().millisecondsSinceEpoch}.aac';
+        } catch (e2) {
+          // If both fail, use a fixed path as last resort
+          print('Error getting temporary directory: $e2');
+          // For Android, try using external storage
+          if (Platform.isAndroid) {
+            try {
+              Directory? externalDir = await getExternalStorageDirectory();
+              if (externalDir != null) {
+                filePath = '${externalDir.path}/emergency_recording_${DateTime.now().millisecondsSinceEpoch}.aac';
+              } else {
+                throw Exception('Could not access external storage');
+              }
+            } catch (e3) {
+              print('Error getting external storage: $e3');
+              ScaffoldMessenger.of(context).showSnackBar(
+                const SnackBar(content: Text('Error accessing all storage directories')),
+              );
+              return;
+            }
+          } else {
+            // For iOS, try app support directory
+            try {
+              Directory supportDir = await getApplicationSupportDirectory();
+              filePath = '${supportDir.path}/emergency_recording_${DateTime.now().millisecondsSinceEpoch}.aac';
+            } catch (e4) {
+              print('Error getting application support directory: $e4');
+              ScaffoldMessenger.of(context).showSnackBar(
+                const SnackBar(content: Text('Cannot access any storage directories')),
+              );
+              return;
+            }
+          }
+        }
+      }
+      
+      // Check if the recorder is already initialized and can record
+      try {
+        if (await _audioRecorder.hasPermission()) {
+          setState(() {
+            _isRecording = true;
+          });
+
+          // Configure audio encoder parameters
+          await _audioRecorder.start(
+            path: filePath,
+            encoder: AudioEncoder.aacLc, // AAC encoder
+            bitRate: 128000,
+            samplingRate: 44100,
+          );
+
+          setState(() {
+            _audioPath = filePath;
+          });
+        } else {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('Recording permission not available')),
+          );
+        }
+      } catch (recorderError) {
+        print('Error initializing recorder: $recorderError');
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Recording initialization error: $recorderError')),
+        );
+        setState(() {
+          _isRecording = false;
+        });
+      }
+    } else {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Microphone permission denied')),
+      );
+    }
+  } catch (e) {
+    print('Recording error: $e');
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text('Error starting recording: $e')),
+    );
+    setState(() {
+      _isRecording = false;
+    });
+  }
+}
+
+Future<void> _stopRecording() async {
+  try {
+    // Stop recording and get the path
+    final path = await _audioRecorder.stop();
+    
+    setState(() {
+      _isRecording = false;
+    });
+
+    if (path != null) {
+      // Upload the recording and create emergency report
+      await _submitEmergencyReport(path);
+    }
+  } catch (e) {
+    print('Stop recording error: $e');
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text('Error stopping recording: $e')),
+    );
+    setState(() {
+      _isRecording = false;
+    });
+  }
+}
+
+Future<void> _submitEmergencyReport(String audioPath) async {
+  try {
+    setState(() {
+      _isRefreshing = true;
+    });
+
+    // 1. Get current location
+    bool hasLocationPermission = await Permission.location.request().isGranted;
+    Position? position;
+    String locationAddress = "Location not available";
+    
+    if (hasLocationPermission) {
+      position = await Geolocator.getCurrentPosition();
+      try {
+        List<Placemark> placemarks = await placemarkFromCoordinates(
+          position.latitude,
+          position.longitude,
+        );
+        if (placemarks.isNotEmpty) {
+          Placemark place = placemarks.first;
+          locationAddress = "${place.locality}, ${place.administrativeArea}, ${place.country}";
+        }
+      } catch (e) {
+        print('Reverse geocoding error: $e');
+      }
+    }
+
+    // 2. Upload audio file
+    final supabase = Supabase.instance.client;
+    final fileName = 'emergency_audio_${DateTime.now().millisecondsSinceEpoch}.aac';
+    final filePath = 'emergency-recordings/$fileName';
+    
+    final fileBytes = await File(audioPath).readAsBytes();
+    await supabase.storage.from('emergency-recordings').uploadBinary(
+      filePath,
+      fileBytes,
+      fileOptions: FileOptions(contentType: 'audio/aac'),
+    );
+    
+    final audioUrl = supabase.storage.from('emergency-recordings').getPublicUrl(filePath);
+
+    // 3. Create emergency report
+    final user = AuthService.currentUser;
+    if (user != null) {
+      final response = await supabase.from('incidents').insert({
+        'user_id': user.id,
+        'title': 'Emergency Audio Report',
+        'description': 'Emergency audio report submitted via quick recording',
+        'incident_type': 'Emergency',
+        'status': 'emergency',
+        'file_urls': [audioUrl],
+        'latitude': position?.latitude,
+        'longitude': position?.longitude,
+        'location_address': locationAddress,
+        'created_at': DateTime.now().toIso8601String(),
+      }).select();
+
+      if (response != null) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Emergency report submitted successfully')),
+        );
+        _fetchActiveReports(); // Refresh the reports list
+      }
+    }
+  } catch (e) {
+    print('Emergency report submission error: $e');
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text('Error submitting emergency report: ${e.toString()}')),
+    );
+  } finally {
+    setState(() {
+      _isRefreshing = false;
+      _audioPath = null;
+    });
+  }
+}
+
+@override
+void dispose() {
+  _audioRecorder.dispose();
+  super.dispose();
+}
+
 Future<void> _fetchActiveReports() async {
   try {
     final user = AuthService.currentUser;
@@ -99,8 +319,45 @@ Future<void> _fetchActiveReports() async {
     });
   }
 }
+Widget _buildEmergencyButton() {
+  return Padding(
+    padding: const EdgeInsets.symmetric(vertical: 10),
+    child: Center(
+      child: SizedBox(
+        height: 44,
+        child: ElevatedButton.icon(
+          onPressed: () {
+            if (_isRecording) {
+              _stopRecording();
+            } else {
+              _startRecording();
+            }
+          },
+          icon: _isRecording 
+              ? const Icon(Icons.stop, size: 18)
+              : const Icon(Icons.emergency, size: 18),
+          label: Text(
+            _isRecording ? 'Stop Emergency Recording' : 'Report Emergency',
+            style: const TextStyle(
+              fontSize: 14,
+              fontWeight: FontWeight.w500,
+            ),
+          ),
+          style: ElevatedButton.styleFrom(
+            backgroundColor: _isRecording ? Colors.red : Colors.red[800],
+            foregroundColor: Colors.white,
+            padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 0),
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(30),
+            ),
+          ),
+        ),
+      ),
+    ),
+  );
+}
 
-  @override
+@override
 Widget build(BuildContext context) {
   return Scaffold(
     key: scaffoldKey,
@@ -117,7 +374,7 @@ Widget build(BuildContext context) {
       actions: [
         IconButton(
           icon: const Icon(Icons.refresh),
-    onPressed: _isRefreshing ? null :  _fetchActiveReports,
+          onPressed: _isRefreshing ? null : _fetchActiveReports,
           tooltip: 'Refresh',
         ),
         IconButton(
@@ -185,6 +442,9 @@ Widget build(BuildContext context) {
                       ],
                     ),
                   ),
+                  
+                  // Emergency Recording Button - Added here before Report New Case button
+                  _buildEmergencyButton(),
                   
                   // Report New Case button - SMALLER VERSION
                   Padding(
