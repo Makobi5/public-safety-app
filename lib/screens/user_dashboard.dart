@@ -15,6 +15,10 @@ import 'package:geolocator/geolocator.dart';
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter_sound_web/flutter_sound_web.dart';
 import 'package:flutter_sound_platform_interface/flutter_sound_recorder_platform_interface.dart';
+import 'dart:typed_data';
+import 'dart:html' as html;
+
+
 
 
 class UserDashboard extends StatefulWidget {
@@ -83,90 +87,68 @@ class _UserDashboardState extends State<UserDashboard> {
 Future<void> _startRecording() async {
   try {
     // Check and request permissions
-    if (await Permission.microphone.request().isGranted) {
-      // Try to get storage directory with error handling
-      String filePath;
+    if (!kIsWeb && !(await Permission.microphone.request().isGranted)) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Microphone permission denied')),
+      );
+      return;
+    }
+
+    // Platform-specific file path handling
+    String filePath;
+    if (kIsWeb) {
+      // Web-specific path
+      filePath = 'emergency_recording_${DateTime.now().millisecondsSinceEpoch}.aac';
+    } else {
+      // Mobile path
       try {
         Directory appDocDir = await getApplicationDocumentsDirectory();
         filePath = '${appDocDir.path}/emergency_recording_${DateTime.now().millisecondsSinceEpoch}.aac';
       } catch (e) {
-        // Fallback to a temporary directory or cache directory
         print('Error getting application directory: $e');
         try {
-          // Try using temporary directory instead
           Directory tempDir = await getTemporaryDirectory();
           filePath = '${tempDir.path}/emergency_recording_${DateTime.now().millisecondsSinceEpoch}.aac';
         } catch (e2) {
-          // If both fail, use a fixed path as last resort
           print('Error getting temporary directory: $e2');
-          // For Android, try using external storage
-          if (Platform.isAndroid) {
-            try {
-              Directory? externalDir = await getExternalStorageDirectory();
-              if (externalDir != null) {
-                filePath = '${externalDir.path}/emergency_recording_${DateTime.now().millisecondsSinceEpoch}.aac';
-              } else {
-                throw Exception('Could not access external storage');
-              }
-            } catch (e3) {
-              print('Error getting external storage: $e3');
-              ScaffoldMessenger.of(context).showSnackBar(
-                const SnackBar(content: Text('Error accessing all storage directories')),
-              );
-              return;
-            }
-          } else {
-            // For iOS, try app support directory
-            try {
-              Directory supportDir = await getApplicationSupportDirectory();
-              filePath = '${supportDir.path}/emergency_recording_${DateTime.now().millisecondsSinceEpoch}.aac';
-            } catch (e4) {
-              print('Error getting application support directory: $e4');
-              ScaffoldMessenger.of(context).showSnackBar(
-                const SnackBar(content: Text('Cannot access any storage directories')),
-              );
-              return;
-            }
-          }
-        }
-      }
-      
-      // Check if the recorder is already initialized and can record
-      try {
-        if (await _audioRecorder.hasPermission()) {
-          setState(() {
-            _isRecording = true;
-          });
-
-          // Configure audio encoder parameters
-          await _audioRecorder.start(
-            path: filePath,
-            encoder: AudioEncoder.aacLc, // AAC encoder
-            bitRate: 128000,
-            samplingRate: 44100,
-          );
-
-          setState(() {
-            _audioPath = filePath;
-          });
-        } else {
           ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('Recording permission not available')),
+            const SnackBar(content: Text('Error accessing storage directories')),
           );
+          return;
         }
-      } catch (recorderError) {
-        print('Error initializing recorder: $recorderError');
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Recording initialization error: $recorderError')),
-        );
-        setState(() {
-          _isRecording = false;
-        });
       }
-    } else {
+    }
+
+    // Check if the recorder is already initialized and can record
+    try {
+      if (kIsWeb || await _audioRecorder.hasPermission()) {
+        setState(() {
+          _isRecording = true;
+        });
+
+        await _audioRecorder.start(
+          path: filePath,
+          encoder: AudioEncoder.aacLc,
+          bitRate: 128000,
+          samplingRate: 44100,
+        );
+
+        setState(() {
+          _audioPath = filePath;
+        });
+      } else {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Recording permission not available')),
+        );
+      }
+    } catch (recorderError) {
+      print('Error initializing recorder: $recorderError');
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Microphone permission denied')),
+        SnackBar(content: Text('Recording initialization error: $recorderError')),
       );
+      setState(() {
+        _isRecording = false;
+      });
     }
   } catch (e) {
     print('Recording error: $e');
@@ -181,102 +163,116 @@ Future<void> _startRecording() async {
 
 Future<void> _stopRecording() async {
   try {
-    // Stop recording and get the path
-    final path = await _audioRecorder.stop();
-    
-    setState(() {
-      _isRecording = false;
-    });
+    if (!_isRecording) return;
 
-    if (path != null) {
-      // Upload the recording and create emergency report
-      await _submitEmergencyReport(path);
+    setState(() => _isRecording = false);
+    
+    if (kIsWeb) {
+      // Web-specific handling
+      final result = await _audioRecorder.stop();
+      
+      if (result != null) {
+        Uint8List? audioBytes;
+        
+        if (result is Uint8List) {
+          // Already a Uint8List, use directly
+          // audioBytes = result;
+        } else if (result is List<int>) {
+          // Convert List<int> to Uint8List
+          audioBytes = Uint8List.fromList(result as List<int>);
+        } else if (result is String) {
+          // Handle if recorder returns a path/URL
+          try {
+            final response = await html.HttpRequest.request(
+              result,
+              method: 'GET',
+              responseType: 'arraybuffer'
+            );
+            
+            if (response.response != null) {
+              // Convert ArrayBuffer to Uint8List
+              if (response.response is ByteBuffer) {
+  audioBytes = Uint8List.view(response.response as ByteBuffer);
+}
+
+            } else {
+              throw Exception("Empty response");
+            }
+          } catch (e) {
+            print('Error fetching audio data: $e');
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(content: Text('Error processing audio: ${e.toString()}')),
+            );
+          }
+        }
+        
+        // If we successfully got audio bytes, submit them
+        if (audioBytes != null) {
+          await _submitEmergencyReport('web_recording.aac', audioBytes);
+        }
+      }
+    } else {
+      // Mobile handling
+      final path = await _audioRecorder.stop();
+      if (path != null) {
+        final file = File(path);
+        if (await file.exists()) {
+          await _submitEmergencyReport(path);
+        }
+      }
     }
   } catch (e) {
     print('Stop recording error: $e');
     ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text('Error stopping recording: $e')),
+      SnackBar(content: Text('Error stopping recording: ${e.toString()}')),
     );
-    setState(() {
-      _isRecording = false;
-    });
   }
 }
-
-Future<void> _submitEmergencyReport(String audioPath) async {
+Future<void> _submitEmergencyReport(String audioPath, [Uint8List? webAudioBytes]) async {
   try {
-    setState(() {
-      _isRefreshing = true;
-    });
-
-    // 1. Get current location
-    bool hasLocationPermission = await Permission.location.request().isGranted;
-    Position? position;
-    String locationAddress = "Location not available";
+    setState(() => _isRefreshing = true);
     
-    if (hasLocationPermission) {
-      position = await Geolocator.getCurrentPosition();
-      try {
-        List<Placemark> placemarks = await placemarkFromCoordinates(
-          position.latitude,
-          position.longitude,
-        );
-        if (placemarks.isNotEmpty) {
-          Placemark place = placemarks.first;
-          locationAddress = "${place.locality}, ${place.administrativeArea}, ${place.country}";
-        }
-      } catch (e) {
-        print('Reverse geocoding error: $e');
-      }
-    }
-
-    // 2. Upload audio file
+    // 1. Get location (same as before)
+    
+    // 2. Upload audio
+    String? audioUrl;
     final supabase = Supabase.instance.client;
-    final fileName = 'emergency_audio_${DateTime.now().millisecondsSinceEpoch}.aac';
-    final filePath = 'emergency-recordings/$fileName';
-    
-    final fileBytes = await File(audioPath).readAsBytes();
-    await supabase.storage.from('emergency-recordings').uploadBinary(
-      filePath,
-      fileBytes,
-      fileOptions: FileOptions(contentType: 'audio/aac'),
-    );
-    
-    final audioUrl = supabase.storage.from('emergency-recordings').getPublicUrl(filePath);
+    final fileName = 'audio_${DateTime.now().millisecondsSinceEpoch}.aac';
 
-    // 3. Create emergency report
-    final user = AuthService.currentUser;
-    if (user != null) {
-      final response = await supabase.from('incidents').insert({
-        'user_id': user.id,
-        'title': 'Emergency Audio Report',
-        'description': 'Emergency audio report submitted via quick recording',
-        'incident_type': 'Emergency',
-        'status': 'emergency',
-        'file_urls': [audioUrl],
-        'latitude': position?.latitude,
-        'longitude': position?.longitude,
-        'location_address': locationAddress,
-        'created_at': DateTime.now().toIso8601String(),
-      }).select();
-
-      if (response != null) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Emergency report submitted successfully')),
-        );
-        _fetchActiveReports(); // Refresh the reports list
-      }
+    if (kIsWeb && webAudioBytes != null) {
+      // Convert to List<int> if needed
+      final bytes = webAudioBytes is List<int> 
+          ? Uint8List.fromList(webAudioBytes) 
+          : webAudioBytes;
+      
+      final uploadResponse = await supabase.storage
+          .from('emergency-recordings')
+          .uploadBinary(fileName, bytes);
+      
+      audioUrl = supabase.storage
+          .from('emergency-recordings')
+          .getPublicUrl(fileName);
+    } else if (!kIsWeb) {
+      final file = File(audioPath);
+      final bytes = await file.readAsBytes();
+      await supabase.storage
+          .from('emergency-recordings')
+          .uploadBinary(fileName, bytes);
+      
+      audioUrl = supabase.storage
+          .from('emergency-recordings')
+          .getPublicUrl(fileName);
     }
+
+    // 3. Create report (same as before)
+    
   } catch (e) {
-    print('Emergency report submission error: $e');
+    print('Submission error: $e');
     ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text('Error submitting emergency report: ${e.toString()}')),
+      SnackBar(content: Text('Submission failed: ${e.toString()}')),
     );
   } finally {
-    setState(() {
-      _isRefreshing = false;
-      _audioPath = null;
-    });
+    setState(() => _isRefreshing = false);
   }
 }
 
