@@ -136,6 +136,29 @@ void _nextStep() {
     }
   }
 
+  // Add validation for location step
+  if (_currentStep == 1) {
+    if (_currentPosition == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Please capture your location to continue'),
+          backgroundColor: Colors.red,
+        ),
+      );
+      return;
+    }
+    
+    if (_policeStations.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('No police stations available in this area. Please try again or contact support.'),
+          backgroundColor: Colors.red,
+        ),
+      );
+      return;
+    }
+  }
+
   if (_currentStep < 2) {
     setState(() {
       _currentStep += 1;
@@ -887,189 +910,233 @@ Future<String> _uploadFile(PlatformFile file) async {
     }
   }
 
-// Update your _buildLocationSection method to include police station selection
-Widget _buildLocationSection() {
-  return Container(
-    width: double.infinity,
-    padding: const EdgeInsets.all(16),
-    decoration: BoxDecoration(
-      color: Colors.white,
-      borderRadius: BorderRadius.circular(8),
-      border: Border.all(color: Colors.grey.shade200),
-    ),
-    child: Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        const Text(
-          'Location Information',
-          style: TextStyle(
-            fontSize: 18,
-            fontWeight: FontWeight.bold,
-          ),
+    Widget _buildLocationSection() {
+      return Container(
+        width: double.infinity,
+        padding: const EdgeInsets.all(16),
+        decoration: BoxDecoration(
+          color: Colors.white,
+          borderRadius: BorderRadius.circular(8),
+          border: Border.all(color: Colors.grey.shade200),
         ),
-        const SizedBox(height: 16),
-        
-        // Location Capture Card
-        Container(
-          padding: const EdgeInsets.all(16),
-          decoration: BoxDecoration(
-            color: _currentPosition != null ? Colors.green.shade50 : Colors.orange.shade50,
-            borderRadius: BorderRadius.circular(8),
-            border: Border.all(
-              color: _currentPosition != null ? Colors.green.shade200 : Colors.orange.shade200,
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text(
+              'Location Information*',
+              style: TextStyle(
+                fontSize: 18,
+                fontWeight: FontWeight.bold,
+              ),
             ),
-          ),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Row(
+            const SizedBox(height: 4),
+            Text(
+              'All location fields are required',
+              style: TextStyle(
+                fontSize: 12,
+                color: Colors.red.shade700,
+              ),
+            ),
+            const SizedBox(height: 12),
+            
+            // Location Capture Card
+            Container(
+              padding: const EdgeInsets.all(16),
+              decoration: BoxDecoration(
+                color: _currentPosition != null ? Colors.green.shade50 : Colors.orange.shade50,
+                borderRadius: BorderRadius.circular(8),
+                border: Border.all(
+                  color: _currentPosition != null ? Colors.green.shade200 : Colors.orange.shade200,
+                ),
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Icon(
-                    _currentPosition != null ? Icons.location_on : Icons.location_off,
-                    color: _currentPosition != null ? Colors.green : Colors.orange,
+                  Row(
+                    children: [
+                      Icon(
+                        _currentPosition != null ? Icons.location_on : Icons.location_off,
+                        color: _currentPosition != null ? Colors.green : Colors.orange,
+                      ),
+                      const SizedBox(width: 8),
+                      Text(
+                        _currentPosition != null ? 'Location captured' : 'Location not captured*',
+                        style: TextStyle(
+                          fontWeight: FontWeight.bold,
+                          color: _currentPosition != null ? Colors.green.shade700 : Colors.orange.shade700,
+                        ),
+                      ),
+                    ],
                   ),
-                  const SizedBox(width: 8),
-                  Text(
-                    _currentPosition != null ? 'Location captured' : 'Location not captured',
-                    style: TextStyle(
-                      fontWeight: FontWeight.bold,
-                      color: _currentPosition != null ? Colors.green.shade700 : Colors.orange.shade700,
+                  const SizedBox(height: 8),
+                  if (_currentPosition != null) ...[
+                    Text('Address: $_locationAddress'),
+                    const SizedBox(height: 4),
+                    Text('Coordinates: ${_latitude?.toStringAsFixed(6)}, ${_longitude?.toStringAsFixed(6)}'),
+                  ] else ...[
+                    const Text('Please capture your location to see nearby police stations'),
+                  ],
+                  const SizedBox(height: 12),
+                  Center(
+                    child: ElevatedButton.icon(
+                      onPressed: _isCapturingLocation ? null : _getCurrentLocation,
+                      icon: _isCapturingLocation 
+                          ? const SizedBox(
+                              width: 20,
+                              height: 20,
+                              child: CircularProgressIndicator(
+                                strokeWidth: 2,
+                                valueColor: AlwaysStoppedAnimation<Color>(Colors.white),
+                              ),
+                            )
+                          : const Icon(Icons.my_location),
+                      label: Text(_isCapturingLocation ? 'Capturing...' : 'Capture Location'),
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: const Color(0xFF003366),
+                        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+                      ),
                     ),
                   ),
                 ],
               ),
-              const SizedBox(height: 8),
-              if (_currentPosition != null) ...[
-                Text('Address: $_locationAddress'),
-                const SizedBox(height: 4),
-                Text('Coordinates: ${_latitude?.toStringAsFixed(6)}, ${_longitude?.toStringAsFixed(6)}'),
-              ] else ...[
-                const Text('Please capture your location to see nearby police stations'),
-              ],
-              const SizedBox(height: 12),
-              Center(
-                child: ElevatedButton.icon(
-                  onPressed: _isCapturingLocation ? null : _getCurrentLocation,
-                  icon: _isCapturingLocation 
-                      ? const SizedBox(
-                          width: 20,
-                          height: 20,
-                          child: CircularProgressIndicator(
-                            strokeWidth: 2,
-                            valueColor: AlwaysStoppedAnimation<Color>(Colors.white),
-                          ),
-                        )
-                      : const Icon(Icons.my_location),
-                  label: Text(_isCapturingLocation ? 'Capturing...' : 'Capture Location'),
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: const Color(0xFF003366),
-                    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
-                  ),
+            ),
+            
+            // Police Station Selection (only shown after location is captured)
+            if (_currentPosition != null) ...[
+              const SizedBox(height: 20),
+              const Text(
+                'Forward to Police Station*',
+                style: TextStyle(
+                  fontSize: 16,
+                  fontWeight: FontWeight.w500,
                 ),
               ),
-            ],
-          ),
-        ),
-        
-        // Police Station Selection (only shown after location is captured)
-        if (_currentPosition != null) ...[
-          const SizedBox(height: 20),
-          const Text(
-            'Forward to Police Station',
-            style: TextStyle(
-              fontSize: 16,
-              fontWeight: FontWeight.w500,
-            ),
-          ),
-          const SizedBox(height: 8),
-          _isLoadingStations
-              ? const Center(child: CircularProgressIndicator())
-              : _policeStations.isEmpty
-                  ? const Text('No police stations found in this district')
-                  : Container(
-                      decoration: BoxDecoration(
-                        border: Border.all(color: Colors.grey.shade300),
-                        borderRadius: BorderRadius.circular(8),
-                      ),
-                      child: DropdownButtonHideUnderline(
-                        child: DropdownButton<String>(
-                          isExpanded: true,
-                          value: _selectedPoliceStationId,
-                          onChanged: (String? newValue) {
-                            setState(() {
-                              _selectedPoliceStationId = newValue;
-                              _selectedPoliceStationName = _policeStations
-                                  .firstWhere((station) => station['id'] == newValue)['name'];
-                            });
-                          },
-                          items: _policeStations.map<DropdownMenuItem<String>>((station) {
-                            return DropdownMenuItem<String>(
-                              value: station['id'],
-                              child: Column(
-                                crossAxisAlignment: CrossAxisAlignment.start,
-                                children: [
-                                  Text(station['name'],
-                                      style: const TextStyle(fontWeight: FontWeight.bold)),
-                                  Text('${station['address']}',
-                                      style: TextStyle(fontSize: 12, color: Colors.grey[600])),
-                                  if (station['distance'] != null)
-                                    Text('${station['distance'].toStringAsFixed(1)} km away',
-                                        style: TextStyle(fontSize: 12, color: Colors.grey[600])),
-                                ],
+              const SizedBox(height: 4),
+              Text(
+                'Please select a police station to forward your report',
+                style: TextStyle(
+                  fontSize: 12,
+                  color: Colors.grey.shade600,
+                ),
+              ),
+              const SizedBox(height: 8),
+              _isLoadingStations
+                  ? const Center(child: CircularProgressIndicator())
+                  : _policeStations.isEmpty
+                      ? Column(
+                          children: [
+                            const Text(
+                              'No police stations found in this district',
+                              style: TextStyle(color: Colors.red),
+                            ),
+                            const SizedBox(height: 8),
+                            TextButton(
+                              onPressed: () => _fetchPoliceStations(_detectedDistrict ?? 'Kabale'),
+                              child: const Text('Try Again'),
+                            ),
+                          ],
+                        )
+                      : Container(
+                          decoration: BoxDecoration(
+                            border: Border.all(
+                              color: _selectedPoliceStationId != null 
+                                  ? Colors.grey.shade300 
+                                  : Colors.red.shade300,
+                              width: _selectedPoliceStationId != null ? 1 : 2,
+                            ),
+                            borderRadius: BorderRadius.circular(8),
+                          ),
+                          child: DropdownButtonHideUnderline(
+                            child: DropdownButton<String>(
+                              isExpanded: true,
+                              value: _selectedPoliceStationId,
+                              hint: Padding(
+                                padding: const EdgeInsets.symmetric(horizontal: 16),
+                                child: Text(
+                                  'Select police station*',
+                                  style: TextStyle(
+                                    color: Colors.grey.shade500,
+                                  ),
+                                ),
                               ),
-                            );
-                          }).toList(),
+                              onChanged: (String? newValue) {
+                                setState(() {
+                                  _selectedPoliceStationId = newValue;
+                                  _selectedPoliceStationName = _policeStations
+                                      .firstWhere((station) => station['id'] == newValue)['name'];
+                                });
+                              },
+                              items: _policeStations.map<DropdownMenuItem<String>>((station) {
+                                return DropdownMenuItem<String>(
+                                  value: station['id'],
+                                  child: Padding(
+                                    padding: const EdgeInsets.symmetric(horizontal: 16),
+                                    child: Column(
+                                      crossAxisAlignment: CrossAxisAlignment.start,
+                                      children: [
+                                        Text(station['name'],
+                                            style: const TextStyle(fontWeight: FontWeight.bold)),
+                                        Text('${station['address']}',
+                                            style: TextStyle(fontSize: 12, color: Colors.grey[600])),
+                                        if (station['distance'] != null)
+                                          Text('${station['distance'].toStringAsFixed(1)} km away',
+                                              style: TextStyle(fontSize: 12, color: Colors.grey[600])),
+                                      ],
+                                    ),
+                                  ),
+                                );
+                              }).toList(),
+                            ),
+                          ),
                         ),
-                      ),
-                    ),
-        ],
-        
-        // Additional Location Details
-        const SizedBox(height: 20),
-        const Text(
-          'Additional Location Details',
-          style: TextStyle(
-            fontSize: 16,
-            fontWeight: FontWeight.w500,
-          ),
-        ),
-        const SizedBox(height: 8),
-        TextFormField(
-          controller: _additionalLocationController,
-          decoration: InputDecoration(
-            hintText: 'Provide any additional details about the location',
-            border: OutlineInputBorder(
-              borderRadius: BorderRadius.circular(8),
+            ],
+            
+            // Additional Location Details
+            const SizedBox(height: 20),
+            const Text(
+              'Additional Location Details',
+              style: TextStyle(
+                fontSize: 16,
+                fontWeight: FontWeight.w500,
+              ),
             ),
-            contentPadding: const EdgeInsets.all(16),
-          ),
-          maxLines: 3,
-        ),
+            const SizedBox(height: 8),
+            TextFormField(
+              controller: _additionalLocationController,
+              decoration: InputDecoration(
+                hintText: 'Provide any additional details about the location',
+                border: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                contentPadding: const EdgeInsets.all(16),
+              ),
+              maxLines: 3,
+            ),
 
-        // Landmark Reference
-        const SizedBox(height: 20),
-        const Text(
-          'Landmark Reference (Optional)',
-          style: TextStyle(
-            fontSize: 16,
-            fontWeight: FontWeight.w500,
-          ),
-        ),
-        const SizedBox(height: 8),
-        TextFormField(
-          controller: _landmarkController,
-          decoration: InputDecoration(
-            hintText: 'e.g., Near Kabale University',
-            border: OutlineInputBorder(
-              borderRadius: BorderRadius.circular(8),
+            // Landmark Reference
+            const SizedBox(height: 20),
+            const Text(
+              'Landmark Reference (Optional)',
+              style: TextStyle(
+                fontSize: 16,
+                fontWeight: FontWeight.w500,
+              ),
             ),
-            contentPadding: const EdgeInsets.all(16),
-          ),
+            const SizedBox(height: 8),
+            TextFormField(
+              controller: _landmarkController,
+              decoration: InputDecoration(
+                hintText: 'e.g., Near Kabale University',
+                border: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                contentPadding: const EdgeInsets.all(16),
+              ),
+            ),
+          ],
         ),
-      ],
-    ),
-  );
-}
+      );
+    }
   // Build file upload section
   Widget _buildFileUploadSection() {
     return Container(
@@ -1258,36 +1325,24 @@ void _submitReport() async {
   if (_currentPosition == null) {
     ScaffoldMessenger.of(context).showSnackBar(
       const SnackBar(
-        content: Text('Capturing your location...'),
-        duration: Duration(seconds: 2),
+        content: Text('Please capture your location before submitting'),
+        backgroundColor: Colors.red,
       ),
     );
-    
-    await _getCurrentLocation();
-    
-    if (_currentPosition == null) {
-      final shouldContinue = await showDialog<bool>(
-        context: context,
-        builder: (context) => AlertDialog(
-          title: const Text('Location Not Available'),
-          content: const Text('Some features require location. Continue without?'),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(context, false),
-              child: const Text('Cancel'),
-            ),
-            TextButton(
-              onPressed: () => Navigator.pop(context, true),
-              child: const Text('Continue'),
-            ),
-          ],
-        ),
-      ) ?? false;
-      
-      if (!shouldContinue) return;
-    }
+    return;
   }
   
+  // Check if police station is selected
+  if (_selectedPoliceStationId == null) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: Text('Please select a police station to forward your report to'),
+        backgroundColor: Colors.red,
+      ),
+    );
+    return;
+  }
+
   setState(() => _isUploading = true);
   
   try {
@@ -1853,46 +1908,48 @@ Widget build(BuildContext context) {
                                   ],
                                 ),
                                 const SizedBox(height: 8),
-                                Row(
-                                  children: [
-                                    const SizedBox(width: 8),
-                                    Expanded(
-                                      flex: 2,
-                                      child: Text(
-                                        'Location:',
-                                        style: TextStyle(
-                                          fontSize: 14,
-                                          fontWeight: FontWeight.w500,
-                                          color: Colors.grey.shade700,
-                                        ),
-                                      ),
-                                    ),
-                                    Expanded(
-                                      flex: 3,
-                                      child: Row(
-                                        children: [
-                                          Icon(
-                                            _currentPosition != null ? Icons.check_circle : Icons.info,
-                                            size: 16,
-                                            color: _currentPosition != null ? Colors.green : Colors.orange,
-                                          ),
-                                          const SizedBox(width: 4),
-                                          Expanded(
-                                            child: Text(
-                                              _currentPosition != null 
-                                                  ? _locationAddress 
-                                                  : 'Will be captured at submission',
-                                              style: TextStyle(
-                                                fontSize: 14,
-                                                color: _currentPosition != null ? Colors.black : Colors.orange.shade800,
+                                          // In the review section of step 2, update the location display:
+                                          Row(
+                                            children: [
+                                              const SizedBox(width: 8),
+                                              Expanded(
+                                                flex: 2,
+                                                child: Text(
+                                                  'Location:',
+                                                  style: TextStyle(
+                                                    fontSize: 14,
+                                                    fontWeight: FontWeight.w500,
+                                                    color: Colors.grey.shade700,
+                                                  ),
+                                                ),
                                               ),
-                                            ),
+                                              Expanded(
+                                                flex: 3,
+                                                child: Row(
+                                                  children: [
+                                                    Icon(
+                                                      _currentPosition != null ? Icons.check_circle : Icons.error,
+                                                      size: 16,
+                                                      color: _currentPosition != null ? Colors.green : Colors.red,
+                                                    ),
+                                                    const SizedBox(width: 4),
+                                                    Expanded(
+                                                      child: Text(
+                                                        _currentPosition != null 
+                                                            ? _locationAddress 
+                                                            : 'Location required - please go back',
+                                                        style: TextStyle(
+                                                          fontSize: 14,
+                                                          color: _currentPosition != null ? Colors.black : Colors.red,
+                                                        ),
+                                                      ),
+                                                    ),
+                                                  ],
+                                                ),
+                                              ),
+                                            ],
                                           ),
-                                        ],
-                                      ),
-                                    ),
-                                  ],
-                                ),
+// Add similar highlighting for police station selection
                                 const SizedBox(height: 8),
                                 Row(
                                   children: [
