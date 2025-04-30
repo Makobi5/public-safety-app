@@ -729,7 +729,7 @@ Future<void> _fetchCaseDetails() async {
     // Fetch incident details
     final incidentResponse = await supabase
         .from('incidents')
-        .select()
+        .select('*, emergency_audio')
         .eq('id', widget.incidentId)
         .single();
 
@@ -830,13 +830,10 @@ Future<void> _fetchCaseFiles() async {
 
   try {
     final supabase = Supabase.instance.client;
-    
-    // Get the file URLs from the incident data
-    final fileUrls = _incidentData?['file_urls'] as List<dynamic>? ?? [];
-    
-    // Prepare files list with type information
     final files = <Map<String, dynamic>>[];
-    
+
+    // Check regular file attachments
+    final fileUrls = _incidentData?['file_urls'] as List<dynamic>? ?? [];
     for (var url in fileUrls) {
       if (url is String) {
         final extension = url.split('.').last.toLowerCase();
@@ -848,7 +845,19 @@ Future<void> _fetchCaseFiles() async {
         });
       }
     }
-    
+
+    // Check for emergency audio recording
+    if (_incidentData?['emergency_audio'] != null && 
+        _incidentData!['emergency_audio'].toString().isNotEmpty) {
+      final audioUrl = _incidentData!['emergency_audio'].toString();
+      files.add({
+        'url': audioUrl,
+        'type': 'audio',
+        'name': 'Emergency Recording.${audioUrl.split('.').last}',
+        'isEmergency': true,
+      });
+    }
+
     setState(() {
       _caseFiles = files;
     });
@@ -1170,7 +1179,7 @@ Future<void> _updateCaseStatus(String newStatus) async {
       });
     }
   }
-  Widget _buildMediaViewer() {
+Widget _buildMediaViewer() {
   if (_isLoadingFiles) {
     return const Center(child: CircularProgressIndicator());
   }
@@ -1179,9 +1188,41 @@ Future<void> _updateCaseStatus(String newStatus) async {
     return const Center(child: Text('No files attached to this case'));
   }
 
+  // Check if there's an emergency recording
+  final emergencyAudio = _caseFiles.firstWhere(
+    (file) => file['isEmergency'] == true,
+    orElse: () => {},
+  );
+
   return Column(
     crossAxisAlignment: CrossAxisAlignment.start,
     children: [
+      if (emergencyAudio.isNotEmpty) ...[
+        const Text(
+          'Emergency Recording',
+          style: TextStyle(
+            fontSize: 18,
+            fontWeight: FontWeight.bold,
+            color: Colors.red,
+          ),
+        ),
+        const SizedBox(height: 8),
+        ListTile(
+          leading: const Icon(Icons.emergency, color: Colors.red),
+          title: const Text('Emergency Audio Recording'),
+          subtitle: Text(emergencyAudio['name']),
+          trailing: IconButton(
+            icon: const Icon(Icons.play_arrow),
+            onPressed: () => _showMediaDialog(emergencyAudio),
+          ),
+          tileColor: Colors.red.withOpacity(0.1),
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(8),
+            side: BorderSide(color: Colors.red.withOpacity(0.3)),
+          ),
+        ),
+        const SizedBox(height: 16),
+      ],
       const Text(
         'Case Evidence',
         style: TextStyle(
@@ -1199,9 +1240,9 @@ Future<void> _updateCaseStatus(String newStatus) async {
           mainAxisSpacing: 8,
           childAspectRatio: 1,
         ),
-        itemCount: _caseFiles.length,
+        itemCount: _caseFiles.where((f) => f['isEmergency'] != true).length,
         itemBuilder: (context, index) {
-          final file = _caseFiles[index];
+          final file = _caseFiles.where((f) => f['isEmergency'] != true).toList()[index];
           return GestureDetector(
             onTap: () => _showMediaDialog(file),
             child: Container(
@@ -1219,6 +1260,19 @@ Future<void> _updateCaseStatus(String newStatus) async {
 }
 
 Widget _buildMediaThumbnail(Map<String, dynamic> file) {
+  if (file['isEmergency'] == true) {
+    return const Center(
+      child: Column(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          Icon(Icons.emergency, color: Colors.red, size: 40),
+          SizedBox(height: 8),
+          Text('EMERGENCY', style: TextStyle(color: Colors.red)),
+        ],
+      ),
+    );
+  }
+
   switch (file['type']) {
     case 'image':
       return CachedNetworkImage(
@@ -1251,7 +1305,6 @@ Widget _buildMediaThumbnail(Map<String, dynamic> file) {
     case 'audio':
       return const Center(child: Icon(Icons.audiotrack, size: 40));
     default:
-      // This default case ensures we always return a Widget
       return Center(
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
