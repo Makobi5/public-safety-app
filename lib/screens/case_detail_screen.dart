@@ -28,11 +28,13 @@ import 'package:dio/dio.dart';
 import 'dart:js' as js;
 import 'dart:ui' as ui;
 import 'package:flutter_web_plugins/flutter_web_plugins.dart';
+import 'package:audioplayers/audioplayers.dart';
 
 
 
 class CaseDetailScreen extends StatefulWidget {
   final String incidentId;
+
   
 
   const CaseDetailScreen({
@@ -69,6 +71,11 @@ class _CaseDetailScreenState extends State<CaseDetailScreen> {
 final AccessControlService _accessControlService = AccessControlService();
 bool _hasAccess = false;
 bool _checkingAccess = true;
+AudioPlayer? _audioPlayer;
+bool _isAudioPlaying = false;
+String? _currentlyPlayingUrl;
+  bool _isPlayerInitialized = false;
+
 
   // Status options for dropdown
   final List<String> _statusOptions = [
@@ -190,7 +197,7 @@ void _showMediaDialog(Map<String, dynamic> file) {
       contentPadding: EdgeInsets.zero,
       content: Container(
         width: MediaQuery.of(context).size.width * 0.8,
-        height: 300,
+        height: file['type'] == 'audio' ? 200 : 300,
         child: file['type'] == 'video' 
           ? Center(
               child: Column(
@@ -207,7 +214,6 @@ void _showMediaDialog(Map<String, dynamic> file) {
           : _buildMediaContent(file),
       ),
       actions: [
-        // Add download button for videos with proper functionality
         if (file['type'] == 'video')
           ElevatedButton.icon(
             onPressed: _isSubmitting ? null : () => _handleVideoDownload(file['url']),
@@ -228,6 +234,14 @@ void _showMediaDialog(Map<String, dynamic> file) {
           ),
         TextButton(
           onPressed: () {
+            // Stop audio if playing when dialog is closed
+            if (file['type'] == 'audio' && _isAudioPlaying) {
+              _audioPlayer?.stop();
+              setState(() {
+                _isAudioPlaying = false;
+                _currentlyPlayingUrl = null;
+              });
+            }
             Navigator.pop(context);
           },
           child: Text('Close'),
@@ -1188,18 +1202,16 @@ Widget _buildMediaViewer() {
     return const Center(child: Text('No files attached to this case'));
   }
 
-  // Check if there's an emergency recording
-  final emergencyAudio = _caseFiles.firstWhere(
-    (file) => file['isEmergency'] == true,
-    orElse: () => {},
-  );
+  // Separate emergency and regular files
+  final emergencyFiles = _caseFiles.where((f) => f['isEmergency'] == true).toList();
+  final regularFiles = _caseFiles.where((f) => f['isEmergency'] != true).toList();
 
   return Column(
     crossAxisAlignment: CrossAxisAlignment.start,
     children: [
-      if (emergencyAudio.isNotEmpty) ...[
+      if (emergencyFiles.isNotEmpty) ...[
         const Text(
-          'Emergency Recording',
+          'Emergency Recordings',
           style: TextStyle(
             fontSize: 18,
             fontWeight: FontWeight.bold,
@@ -1207,59 +1219,62 @@ Widget _buildMediaViewer() {
           ),
         ),
         const SizedBox(height: 8),
-        ListTile(
-          leading: const Icon(Icons.emergency, color: Colors.red),
-          title: const Text('Emergency Audio Recording'),
-          subtitle: Text(emergencyAudio['name']),
-          trailing: IconButton(
-            icon: const Icon(Icons.play_arrow),
-            onPressed: () => _showMediaDialog(emergencyAudio),
+        ...emergencyFiles.map((file) => Padding(
+          padding: const EdgeInsets.only(bottom: 8),
+          child: Card(
+            color: Colors.red[50],
+            child: ListTile(
+              leading: const Icon(Icons.emergency, color: Colors.red),
+              title: const Text('Emergency Recording'),
+              subtitle: Text(file['name']),
+              trailing: IconButton(
+                icon: const Icon(Icons.play_arrow),
+                onPressed: () => _showMediaDialog(file),
+              ),
+            ),
           ),
-          tileColor: Colors.red.withOpacity(0.1),
-          shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(8),
-            side: BorderSide(color: Colors.red.withOpacity(0.3)),
+        )),
+        const SizedBox(height: 16),
+      ],
+      if (regularFiles.isNotEmpty) ...[
+        const Text(
+          'Case Evidence',
+          style: TextStyle(
+            fontSize: 18,
+            fontWeight: FontWeight.bold,
           ),
         ),
         const SizedBox(height: 16),
-      ],
-      const Text(
-        'Case Evidence',
-        style: TextStyle(
-          fontSize: 18,
-          fontWeight: FontWeight.bold,
-        ),
-      ),
-      const SizedBox(height: 16),
-      GridView.builder(
-        shrinkWrap: true,
-        physics: const NeverScrollableScrollPhysics(),
-        gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-          crossAxisCount: 3,
-          crossAxisSpacing: 8,
-          mainAxisSpacing: 8,
-          childAspectRatio: 1,
-        ),
-        itemCount: _caseFiles.where((f) => f['isEmergency'] != true).length,
-        itemBuilder: (context, index) {
-          final file = _caseFiles.where((f) => f['isEmergency'] != true).toList()[index];
-          return GestureDetector(
-            onTap: () => _showMediaDialog(file),
-            child: Container(
-              decoration: BoxDecoration(
-                borderRadius: BorderRadius.circular(8),
-                border: Border.all(color: Colors.grey.shade300),
+        GridView.builder(
+          shrinkWrap: true,
+          physics: const NeverScrollableScrollPhysics(),
+          gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+            crossAxisCount: 3,
+            crossAxisSpacing: 8,
+            mainAxisSpacing: 8,
+            childAspectRatio: 1,
+          ),
+          itemCount: regularFiles.length,
+          itemBuilder: (context, index) {
+            final file = regularFiles[index];
+            return GestureDetector(
+              onTap: () => _showMediaDialog(file),
+              child: Container(
+                decoration: BoxDecoration(
+                  borderRadius: BorderRadius.circular(8),
+                  border: Border.all(color: Colors.grey.shade300),
+                ),
+                child: _buildMediaThumbnail(file),
               ),
-              child: _buildMediaThumbnail(file),
-            ),
-          );
-        },
-      ),
+            );
+          },
+        ),
+      ],
     ],
   );
 }
-
 Widget _buildMediaThumbnail(Map<String, dynamic> file) {
+  // Handle emergency case
   if (file['isEmergency'] == true) {
     return const Center(
       child: Column(
@@ -1272,7 +1287,8 @@ Widget _buildMediaThumbnail(Map<String, dynamic> file) {
       ),
     );
   }
-
+  
+  // Handle different file types
   switch (file['type']) {
     case 'image':
       return CachedNetworkImage(
@@ -1303,18 +1319,55 @@ Widget _buildMediaThumbnail(Map<String, dynamic> file) {
         ],
       );
     case 'audio':
-      return const Center(child: Icon(Icons.audiotrack, size: 40));
-    default:
-      return Center(
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            const Icon(Icons.insert_drive_file, size: 40),
-            Text(
-              file['name']?.split('.')?.last ?? 'file',
-              style: const TextStyle(fontSize: 10),
+      return Stack(
+        fit: StackFit.expand,
+        children: [
+          Center(
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                Icon(
+                  Icons.audio_file,
+                  size: 40,
+                  color: Colors.blue,
+                ),
+                if (file['name'] != null)
+                  Padding(
+                    padding: const EdgeInsets.all(4.0),
+                    child: Text(
+                      file['name'].split('.').last,
+                      style: const TextStyle(fontSize: 10),
+                    ),
+                  ),
+              ],
             ),
-          ],
+          ),
+          if (_currentlyPlayingUrl == file['url'])
+            Positioned(
+              bottom: 4,
+              right: 4,
+              child: Container(
+                padding: const EdgeInsets.all(4),
+                decoration: BoxDecoration(
+                  color: Colors.black.withOpacity(0.7),
+                  borderRadius: BorderRadius.circular(20),
+                ),
+                child: const Icon(
+                  Icons.volume_up,
+                  color: Colors.white,
+                  size: 16,
+                ),
+              ),
+            ),
+        ],
+      );
+    default:
+      // Handle unknown file types or when file['type'] is null
+      return const Center(
+        child: Icon(
+          Icons.insert_drive_file,
+          size: 40,
+          color: Colors.grey,
         ),
       );
   }
@@ -1416,6 +1469,7 @@ Widget _buildVideoPlayer(String url) {
 @override
 void dispose() {
   // Clean up video/audio controllers
+  _audioPlayer?.dispose();
   _videoPlayerController?.dispose();
   _chewieController?.dispose();
   
@@ -1436,87 +1490,145 @@ Future<void> _initializeVideoPlayer(String url) async {
   // Do nothing, just log
   debugPrint('Video player initialization skipped for URL: $url');
 }
-
-
-Widget _buildAudioPlayer(String url) {
-  if (kIsWeb) {
-    // Create a unique ID for this audio element
-    final String viewId = 'audio-player-${url.hashCode}';
+// 1. First, ensure the audio player is properly initialized and not null
+void _initAudioPlayer() {
+  if (_audioPlayer == null) {
+    _audioPlayer = AudioPlayer();
     
-    // Create the audio element
-    final audioElement = html.AudioElement()
-      ..id = viewId
-      ..src = url
-      ..controls = true
-      ..style.width = '100%';
+    // Set up error handler
+    _audioPlayer?.onPlayerError.listen((error) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Audio playback error: $error')),
+        );
+      }
+    });
     
-    // Attach it to the DOM
-    html.document.body?.append(audioElement);
-    
-    // Use HtmlElementView with your viewId
-    return SizedBox(
-      width: 300,
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          SizedBox(
-            height: 50,
-            child: HtmlElementView(viewType: viewId),
-          ),
-          const SizedBox(height: 16),
-          ElevatedButton(
-            onPressed: () => _handleFileDownload(url),
-            child: const Text('Download Audio'),
-          ),
-        ],
-      ),
-    );
-  }  else {
-    // Mobile implementation (existing code)
-    return Container(
-      padding: const EdgeInsets.all(16),
-      width: 300,
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          AudioFileWaveforms(
-            size: Size(MediaQuery.of(context).size.width * 0.8, 100),
-            playerController: _audioController ??= PlayerController(),
-            playerWaveStyle: const PlayerWaveStyle(
-              fixedWaveColor: Colors.blueGrey,
-              liveWaveColor: Colors.blue,
-              waveCap: StrokeCap.round,
-            ),
-            enableSeekGesture: true,
-          ),
-          const SizedBox(height: 16),
-          Row(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              IconButton(
-                icon: const Icon(Icons.play_arrow),
-                onPressed: () async {
-                  await _audioController?.preparePlayer(
-                    path: url,
-                    shouldExtractWaveform: true,
-                  );
-                  await _audioController?.startPlayer();
-                },
-              ),
-              IconButton(
-                icon: const Icon(Icons.pause),
-                onPressed: () => _audioController?.pausePlayer(),
-              ),
-              IconButton(
-                icon: const Icon(Icons.stop),
-                onPressed: () => _audioController?.stopPlayer(),
-              ),
-            ],
-          ),
-        ],
-      ),
-    );
+    // Set up completion handler
+    _audioPlayer?.onPlayerComplete.listen((_) {
+      if (mounted) {
+        setState(() {
+          _isAudioPlaying = false;
+          _currentlyPlayingUrl = null;
+        });
+      }
+    });
   }
+}
+// 3. Debugging method to check URL validity
+void _debugAudioUrl(String? url) {
+  print("Audio URL: $url");
+  print("URL validity: ${url != null && url.isNotEmpty}");
+  // Add more validation as needed
+}
+// 2. Update the play method with better null checks and error handling
+Widget _buildAudioPlayer(String? url) {
+  // Validate URL early
+  final bool isValidUrl = url != null && url.isNotEmpty;
+  
+  return Container(
+    width: 300,
+    padding: const EdgeInsets.all(16),
+    child: Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Row(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Icon(
+              Icons.audiotrack,
+              size: 40,
+              color: isValidUrl && _currentlyPlayingUrl == url ? Colors.blue : Colors.grey,
+            ),
+            const SizedBox(width: 16),
+            Column(
+              children: [
+                Row(
+                  children: [
+                    IconButton(
+                      icon: Icon(
+                        _isAudioPlaying && _currentlyPlayingUrl == url
+                            ? Icons.pause
+                            : Icons.play_arrow,
+                        color: const Color(0xFF003366),
+                      ),
+                      onPressed: isValidUrl ? () async {
+                        // Ensure we have a player instance
+                        _initAudioPlayer();
+                        
+                        if (_isAudioPlaying && _currentlyPlayingUrl == url) {
+                          // Pause current playback
+                          await _audioPlayer?.pause();
+                          setState(() {
+                            _isAudioPlaying = false;
+                          });
+                        } else {
+                          // Stop any currently playing audio
+                          if (_audioPlayer != null) {
+                            await _audioPlayer!.stop();
+                          }
+                          
+                          try {
+                            // Extra validation check
+                            if (url == null || url.isEmpty) {
+                              throw Exception("Invalid audio URL");
+                            }
+                            
+                            // Create a valid URL source
+                            final audioSource = UrlSource(url);
+                            
+                            // Play the audio with proper error handling
+                            if (_audioPlayer != null) {
+                              await _audioPlayer!.play(audioSource);
+                              setState(() {
+                                _isAudioPlaying = true;
+                                _currentlyPlayingUrl = url;
+                              });
+                            } else {
+                              throw Exception("Audio player not initialized");
+                            }
+                          } catch (e) {
+                            // Handle and display the error
+                            print("Audio playback error: $e");
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              SnackBar(content: Text('Error playing audio: $e')),
+                            );
+                          }
+                        }
+                      } : null, // Disable button if URL is invalid
+                    ),
+                    IconButton(
+                      icon: const Icon(Icons.stop, color: Color(0xFF003366)),
+                      onPressed: (_isAudioPlaying && isValidUrl) ? () async {
+                        if (_audioPlayer != null) {
+                          await _audioPlayer!.stop();
+                          if (mounted) {
+                            setState(() {
+                              _isAudioPlaying = false;
+                              _currentlyPlayingUrl = null;
+                            });
+                          }
+                        }
+                      } : null, // Disable button if not playing
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          ],
+        ),
+        const SizedBox(height: 16),
+        ElevatedButton(
+          onPressed: isValidUrl ? () => _handleFileDownload(url!) : null,
+          style: ElevatedButton.styleFrom(
+            backgroundColor: const Color(0xFF003366),
+            disabledBackgroundColor: Colors.grey,
+          ),
+          child: const Text('Download Audio'),
+        ),
+      ],
+    ),
+  );
 }
 
 Future<void> _handleFileDownload(String url) async {
@@ -2353,3 +2465,7 @@ Widget build(BuildContext context) {
               ),
   );
 }}
+
+extension on AudioPlayer? {
+  get onPlayerError => null;
+}
