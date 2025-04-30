@@ -118,13 +118,30 @@ class _IncidentReportFormPageState extends State<IncidentReportFormPage> {
     }
   }
 
-  void _nextStep() {
-    if (_currentStep < 2) {
-      setState(() {
-        _currentStep += 1;
-      });
+void _nextStep() {
+  // Validate the current step before proceeding
+  if (_currentStep == 0) {
+    if (_selectedIncidentType == null || _selectedIncidentType!.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Please select an incident type to continue'),
+          backgroundColor: Colors.red,
+        ),
+      );
+      return;
+    }
+    
+    if (!_formKey.currentState!.validate()) {
+      return;
     }
   }
+
+  if (_currentStep < 2) {
+    setState(() {
+      _currentStep += 1;
+    });
+  }
+}
 
   void _previousStep() {
     if (_currentStep > 0) {
@@ -1493,135 +1510,139 @@ Widget build(BuildContext context) {
   final screenSize = MediaQuery.of(context).size;
   
   return Scaffold(
-    backgroundColor: Colors.grey[100],
-    appBar: AppBar(
-      title: const Text(
-        'Submit Safety Report',
-        style: TextStyle(
-          color: Colors.white,
-          fontWeight: FontWeight.bold,
-        ),
-      ),
-      backgroundColor: const Color(0xFF003366),
-      elevation: 0,
-      leading: IconButton(
-        icon: const Icon(Icons.arrow_back),
-        onPressed: () {
-          if (_currentStep > 0) {
-            _previousStep();
-          } else {
-            Navigator.of(context).pop();
-          }
-        },
-      ),
-      bottom: PreferredSize(
-        preferredSize: const Size.fromHeight(60),
-        child: _buildStepIndicator(),
+  backgroundColor: Colors.grey[100],
+  appBar: AppBar(
+    title: const Text(
+      'Submit Safety Report',
+      style: TextStyle(
+        color: Colors.white,
+        fontWeight: FontWeight.bold,
       ),
     ),
-    body: SafeArea(
-      child: SingleChildScrollView(
-        child: Padding(
-          padding: const EdgeInsets.all(16.0),
-          child: Form(
-            key: _formKey,
-            child: Card(
-              elevation: 2,
-              shape: RoundedRectangleBorder(
-                borderRadius: BorderRadius.circular(16),
-              ),
-              child: Padding(
-                padding: const EdgeInsets.all(20.0),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    if (_currentStep == 0) ...[
-                      // Incident Details Step
-                      const Text(
-                        'Incident Type',
-                        style: TextStyle(
-                          fontSize: 16,
-                          fontWeight: FontWeight.w500,
+    backgroundColor: const Color(0xFF003366),
+    elevation: 0,
+    leading: IconButton(
+      icon: const Icon(Icons.arrow_back),
+      onPressed: () {
+        if (_currentStep > 0) {
+          _previousStep();
+        } else {
+          Navigator.of(context).pop();
+        }
+      },
+    ),
+    bottom: PreferredSize(
+      preferredSize: const Size.fromHeight(60),
+      child: _buildStepIndicator(),
+    ),
+  ),
+  body: SafeArea(
+    child: SingleChildScrollView(
+      child: Padding(
+        padding: const EdgeInsets.all(16.0),
+        child: Form(
+          key: _formKey,
+          child: Card(
+            elevation: 2,
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(16),
+            ),
+            child: Padding(
+              padding: const EdgeInsets.all(20.0),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  if (_currentStep == 0) ...[
+                    // Incident Details Step
+                    const Text(
+                      'Incident Type*',
+                      style: TextStyle(
+                        fontSize: 16,
+                        fontWeight: FontWeight.w500,
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+                    Container(
+                      decoration: BoxDecoration(
+                        border: Border.all(color: Colors.grey.shade300),
+                        borderRadius: BorderRadius.circular(8),
+                      ),
+                      child: DropdownButtonHideUnderline(
+                        child: DropdownButtonFormField<String>(
+                          decoration: InputDecoration(
+                            contentPadding: const EdgeInsets.symmetric(horizontal: 16),
+                            border: InputBorder.none,
+                            errorStyle: TextStyle(
+                              color: Colors.red.shade700,
+                              fontSize: 12,
+                            ),
+                          ),
+                          hint: const Text('Select incident type'),
+                          value: _selectedIncidentType,
+                          onChanged: (value) {
+                            setState(() {
+                              _selectedIncidentType = value;
+                            });
+                          },
+                          validator: (value) {
+                            if (value == null || value.isEmpty) {
+                              return 'Please select an incident type';
+                            }
+                            return null;
+                          },
+                          items: [
+                            'Robbery',
+                            'Theft',
+                            'Rape',
+                            'Defilement',
+                            'Sexual Assault',
+                            'Domestic Violence',
+                            'Murder',
+                            'Manslaughter',
+                            'Drug Abuse',
+                            'Kidnap',
+                            'Child Labour',
+                            'Cyber Crime',
+                            'Fraud and financial crimes',
+                            'Accident',
+                            'Fire outbreak',
+                            'Other'
+                          ].map<DropdownMenuItem<String>>((String value) {
+                            return DropdownMenuItem<String>(
+                              value: value,
+                              child: Text(value),
+                            );
+                          }).toList(),
                         ),
                       ),
-                      const SizedBox(height: 8),
-                      Container(
-                        decoration: BoxDecoration(
-                          border: Border.all(color: Colors.grey.shade300),
+                    ),
+                    
+                    const SizedBox(height: 20),
+                    const Text(
+                      'Description*',
+                      style: TextStyle(
+                        fontSize: 16,
+                        fontWeight: FontWeight.w500,
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+                    TextFormField(
+                      controller: _descriptionController,
+                      decoration: InputDecoration(
+                        hintText: 'Provide detailed description of the incident',
+                        border: OutlineInputBorder(
                           borderRadius: BorderRadius.circular(8),
                         ),
-                        child: DropdownButtonHideUnderline(
-                          child: DropdownButtonFormField<String>(
-                            decoration: const InputDecoration(
-                              contentPadding: EdgeInsets.symmetric(horizontal: 16),
-                              border: InputBorder.none,
-                            ),
-                            hint: const Text('Select incident type'),
-                            value: _selectedIncidentType,
-                            onChanged: (value) {
-                              setState(() {
-                                _selectedIncidentType = value;
-                              });
-                            },
-                            validator: (value) {
-                              if (value == null || value.isEmpty) {
-                                return 'Please select an incident type';
-                              }
-                              return null;
-                            },
-                            items: [
-                              'Robbery',
-                              'Theft',
-                              'Rape',
-                              'Defilement',
-                              'Sexual Assault',
-                              'Demestic Violence',
-                              'Murder',
-                              'Manslaughter',
-                              'Drug Abuse',
-                              'Kidnap',
-                              'Child Labour',
-                              'Cyber Crime',
-                              'Fraud and financial crimes',
-                              'Accident',
-                              'Fire outbreak',
-                              'Other'
-                            ].map<DropdownMenuItem<String>>((String value) {
-                              return DropdownMenuItem<String>(
-                                value: value,
-                                child: Text(value),
-                              );
-                            }).toList(),
-                          ),
-                        ),
+                        contentPadding: const EdgeInsets.all(16),
                       ),
-                      
-                      const SizedBox(height: 20),
-                      const Text(
-                        'Description',
-                        style: TextStyle(
-                          fontSize: 16,
-                          fontWeight: FontWeight.w500,
-                        ),
-                      ),
-                      const SizedBox(height: 8),
-                      TextFormField(
-                        controller: _descriptionController,
-                        decoration: InputDecoration(
-                          hintText: 'Provide detailed description of the incident',
-                          border: OutlineInputBorder(
-                            borderRadius: BorderRadius.circular(8),
-                          ),
-                          contentPadding: const EdgeInsets.all(16),
-                        ),
-                        maxLines: 4,
-                        validator: (value) {
-                          if (value == null || value.isEmpty) {
-                            return 'Please enter a description';
-                          }
-                          return null;
-                        },
-                      ),
+                      maxLines: 4,
+                      validator: (value) {
+                        if (value == null || value.isEmpty) {
+                          return 'Please enter a description';
+                        }
+                        return null;
+                      },
+                    ),
                       
                       const SizedBox(height: 20),
                       Row(
@@ -1961,25 +1982,25 @@ Widget build(BuildContext context) {
                               ),
                             ),
                           ),
-                          ElevatedButton(
-                            onPressed: () {
-                              // Validate current step and proceed if valid
-                              _nextStep();
-                            },
-                            style: ElevatedButton.styleFrom(
-                              backgroundColor: const Color(0xFF003366),
-                              padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
-                              shape: RoundedRectangleBorder(
-                                borderRadius: BorderRadius.circular(30),
+                            ElevatedButton(
+                              onPressed: () {
+                                // This will now trigger the validation in _nextStep()
+                                _nextStep();
+                              },
+                              style: ElevatedButton.styleFrom(
+                                backgroundColor: const Color(0xFF003366),
+                                padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
+                                shape: RoundedRectangleBorder(
+                                  borderRadius: BorderRadius.circular(30),
+                                ),
+                              ),
+                              child: const Text(
+                                'Next',
+                                style: TextStyle(
+                                  fontWeight: FontWeight.w600,
+                                ),
                               ),
                             ),
-                            child: const Text(
-                              'Next',
-                              style: TextStyle(
-                                fontWeight: FontWeight.w600,
-                              ),
-                            ),
-                          ),
                         ],
                       ),
                     
