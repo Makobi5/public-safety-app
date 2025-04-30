@@ -26,6 +26,9 @@ import 'package:flutter/material.dart';
 import 'dart:html' as html;
 import 'package:dio/dio.dart';
 import 'dart:js' as js;
+import 'dart:ui' as ui;
+import 'package:flutter_web_plugins/flutter_web_plugins.dart';
+
 
 
 class CaseDetailScreen extends StatefulWidget {
@@ -869,7 +872,7 @@ String _getFileTypeFromExtension(String extension) {
     return 'image';
   } else if (['mp4', 'mov', 'avi'].contains(extension)) {
     return 'video';
-  } else if (['mp3', 'wav', 'm4a'].contains(extension)) {
+  } else if (['mp3', 'wav', 'm4a', 'ogg', 'aac'].contains(extension)) {
     return 'audio';
   }
   return 'file';
@@ -1293,7 +1296,7 @@ Widget _buildMediaContent(Map<String, dynamic> file) {
               const SizedBox(height: 8),
               ElevatedButton(
                 onPressed: () {
-                  // Implement download functionality
+                  _handleFileDownload(file['url']);
                 },
                 child: const Text('Download File'),
               ),
@@ -1383,49 +1386,104 @@ Future<void> _initializeVideoPlayer(String url) async {
 
 
 Widget _buildAudioPlayer(String url) {
-  return Container(
-    padding: const EdgeInsets.all(16),
-    width: 300,
-    child: Column(
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        AudioFileWaveforms(
-          size: Size(MediaQuery.of(context).size.width * 0.8, 100),
-          playerController: _audioController ??= PlayerController(),
-          playerWaveStyle: const PlayerWaveStyle(
-            fixedWaveColor: Colors.blueGrey,  // Fixed typo in color name
-            liveWaveColor: Colors.blue,
-            waveCap: StrokeCap.round,
+  if (kIsWeb) {
+    // Create a unique ID for this audio element
+    final String viewId = 'audio-player-${url.hashCode}';
+    
+    // Create the audio element
+    final audioElement = html.AudioElement()
+      ..id = viewId
+      ..src = url
+      ..controls = true
+      ..style.width = '100%';
+    
+    // Attach it to the DOM
+    html.document.body?.append(audioElement);
+    
+    // Use HtmlElementView with your viewId
+    return SizedBox(
+      width: 300,
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          SizedBox(
+            height: 50,
+            child: HtmlElementView(viewType: viewId),
           ),
-          enableSeekGesture: true,  // Fixed typo in parameter name
-        ),
-        const SizedBox(height: 16),
-        Row(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            IconButton(
-              icon: const Icon(Icons.play_arrow),
-              onPressed: () async {
-                await _audioController?.preparePlayer(
-                  path: url,
-                  shouldExtractWaveform: true,
-                );
-                await _audioController?.startPlayer();
-              },
+          const SizedBox(height: 16),
+          ElevatedButton(
+            onPressed: () => _handleFileDownload(url),
+            child: const Text('Download Audio'),
+          ),
+        ],
+      ),
+    );
+  }  else {
+    // Mobile implementation (existing code)
+    return Container(
+      padding: const EdgeInsets.all(16),
+      width: 300,
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          AudioFileWaveforms(
+            size: Size(MediaQuery.of(context).size.width * 0.8, 100),
+            playerController: _audioController ??= PlayerController(),
+            playerWaveStyle: const PlayerWaveStyle(
+              fixedWaveColor: Colors.blueGrey,
+              liveWaveColor: Colors.blue,
+              waveCap: StrokeCap.round,
             ),
-            IconButton(
-              icon: const Icon(Icons.pause),
-              onPressed: () => _audioController?.pausePlayer(),
-            ),
-            IconButton(
-              icon: const Icon(Icons.stop),
-              onPressed: () => _audioController?.stopPlayer(),
-            ),
-          ],
-        ),
-      ],
-    ),
-  );
+            enableSeekGesture: true,
+          ),
+          const SizedBox(height: 16),
+          Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              IconButton(
+                icon: const Icon(Icons.play_arrow),
+                onPressed: () async {
+                  await _audioController?.preparePlayer(
+                    path: url,
+                    shouldExtractWaveform: true,
+                  );
+                  await _audioController?.startPlayer();
+                },
+              ),
+              IconButton(
+                icon: const Icon(Icons.pause),
+                onPressed: () => _audioController?.pausePlayer(),
+              ),
+              IconButton(
+                icon: const Icon(Icons.stop),
+                onPressed: () => _audioController?.stopPlayer(),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+Future<void> _handleFileDownload(String url) async {
+  if (kIsWeb) {
+    try {
+      final anchor = html.AnchorElement(href: url)
+        ..download = url.split('/').last
+        ..target = '_blank';
+      html.document.body?.children.add(anchor);
+      anchor.click();
+      html.document.body?.children.remove(anchor);
+    } catch (e) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Failed to download: ${e.toString()}')),
+      );
+    }
+  } else {
+    // Mobile download implementation
+    // ... (your existing mobile download code)
+  }
 }
 
   // Generate and download case report as PDF
