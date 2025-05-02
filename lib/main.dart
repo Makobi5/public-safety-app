@@ -12,7 +12,7 @@ import 'screens/admin_dashboard.dart'; // Import the admin dashboard
 import 'screens/user_dashboard.dart'; // Import the new user dashboard
 import 'screens/user_profile_screen.dart'; // Import the user profile screen
 import 'screens/edit_profile_screen.dart'; // Import the edit profile screen
-
+import 'package:flutter_web_plugins/flutter_web_plugins.dart';
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
   

@@ -29,6 +29,8 @@ import 'dart:js' as js;
 import 'dart:ui' as ui;
 import 'package:flutter_web_plugins/flutter_web_plugins.dart';
 import 'package:audioplayers/audioplayers.dart';
+import 'package:audioplayers/audioplayers.dart' as audio;
+import 'package:audio_waveforms/audio_waveforms.dart' as waveforms;
 
 
 
@@ -71,10 +73,12 @@ class _CaseDetailScreenState extends State<CaseDetailScreen> {
 final AccessControlService _accessControlService = AccessControlService();
 bool _hasAccess = false;
 bool _checkingAccess = true;
-AudioPlayer? _audioPlayer;
+
+late audio.AudioPlayer _audioPlayer;
 bool _isAudioPlaying = false;
 String? _currentlyPlayingUrl;
-  bool _isPlayerInitialized = false;
+bool _isPlayerInitialized = false;
+bool _isAudioLoading = false; // Add this line
 
 
   // Status options for dropdown
@@ -121,6 +125,7 @@ String? _currentlyPlayingUrl;
 void initState() {
   super.initState();
   _checkAccess();
+  _audioPlayer = audio.AudioPlayer(); 
   
   WidgetsBinding.instance.addPostFrameCallback((_) async {
     // Clear existing SnackBars when the screen loads
@@ -191,60 +196,63 @@ Future<void> _checkAccess() async {
 }
 
 void _showMediaDialog(Map<String, dynamic> file) {
+    if (file['type'] == 'audio') {
+    _debugAudioUrl(file['url']); // Verify audio URL before showing dialog
+  }
+  final isAudio = file['type'] == 'audio';
+  final isCurrentAudio = _currentlyPlayingUrl == file['url'];
+
   showDialog(
     context: context,
     builder: (context) => AlertDialog(
-      contentPadding: EdgeInsets.zero,
-      content: Container(
-        width: MediaQuery.of(context).size.width * 0.8,
-        height: file['type'] == 'audio' ? 200 : 300,
-        child: file['type'] == 'video' 
-          ? Center(
-              child: Column(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  Icon(Icons.videocam, size: 50, color: Colors.grey),
-                  SizedBox(height: 16),
-                  Text('Video preview not available'),
-                  SizedBox(height: 8),
-                  Text('Tap to download video', style: TextStyle(fontSize: 12, color: Colors.grey)),
-                ],
-              ),
+      content: isAudio
+          ? Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(Icons.audiotrack, size: 48),
+                SizedBox(height: 16),
+                Text(file['name'] ?? 'Audio Recording'),
+                SizedBox(height: 16),
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    IconButton(
+                      icon: Icon(
+                        _isAudioPlaying && isCurrentAudio 
+                            ? Icons.pause 
+                            : Icons.play_arrow,
+                      ),
+                      onPressed: () async {
+                        if (_isAudioPlaying && isCurrentAudio) {
+                          await _audioPlayer.pause();
+                        } else {
+                          await _playAudio(file['url']);
+                        }
+                      },
+                    ),
+                    IconButton(
+                      icon: Icon(Icons.stop),
+                      onPressed: _isAudioPlaying && isCurrentAudio
+                          ? () async {
+                              await _audioPlayer.stop();
+                              setState(() => _isAudioPlaying = false);
+                            }
+                          : null,
+                    ),
+                  ],
+                ),
+              ],
             )
           : _buildMediaContent(file),
-      ),
       actions: [
-        if (file['type'] == 'video')
-          ElevatedButton.icon(
-            onPressed: _isSubmitting ? null : () => _handleVideoDownload(file['url']),
-            style: ElevatedButton.styleFrom(
-              backgroundColor: const Color(0xFF003366),
-            ),
-            icon: _isSubmitting 
-              ? SizedBox(
-                  height: 16,
-                  width: 16,
-                  child: CircularProgressIndicator(
-                    color: Colors.white,
-                    strokeWidth: 2,
-                  ),
-                )
-              : Icon(Icons.download, size: 16),
-            label: Text(_isSubmitting ? 'Downloading...' : 'Download'),
-          ),
         TextButton(
+          child: Text('CLOSE'),
           onPressed: () {
-            // Stop audio if playing when dialog is closed
-            if (file['type'] == 'audio' && _isAudioPlaying) {
-              _audioPlayer?.stop();
-              setState(() {
-                _isAudioPlaying = false;
-                _currentlyPlayingUrl = null;
-              });
+            if (isAudio && isCurrentAudio && _isAudioPlaying) {
+              _audioPlayer.stop();
             }
             Navigator.pop(context);
           },
-          child: Text('Close'),
         ),
       ],
     ),
@@ -586,6 +594,7 @@ Future<String?> _getReportedPoliceStationName() async {
 //   );
 // }
 Future<void> _handleVideoDownload(String url) async {
+  _debugAudioUrl(url);
   // Check platform and call appropriate method
   if (kIsWeb) {
     await _downloadVideoWeb(url);
@@ -1227,9 +1236,36 @@ Widget _buildMediaViewer() {
               leading: const Icon(Icons.emergency, color: Colors.red),
               title: const Text('Emergency Recording'),
               subtitle: Text(file['name']),
-              trailing: IconButton(
-                icon: const Icon(Icons.play_arrow),
-                onPressed: () => _showMediaDialog(file),
+              trailing: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  IconButton(
+                    icon: _isAudioLoading && _currentlyPlayingUrl == file['url']
+                        ? const CircularProgressIndicator()
+                        : Icon(
+                            _isAudioPlaying && _currentlyPlayingUrl == file['url']
+                                ? Icons.pause
+                                : Icons.play_arrow,
+                          ),
+                    onPressed: () async {
+                      if (_isAudioPlaying && _currentlyPlayingUrl == file['url']) {
+                        await _audioPlayer.pause();
+                        setState(() => _isAudioPlaying = false);
+                      } else {
+                        await _playAudio(file['url']);
+                      }
+                    },
+                  ),
+                  IconButton(
+                    icon: const Icon(Icons.stop),
+                    onPressed: _isAudioPlaying && _currentlyPlayingUrl == file['url']
+                        ? () async {
+                            await _audioPlayer.stop();
+                            setState(() => _isAudioPlaying = false);
+                          }
+                        : null,
+                  ),
+                ],
               ),
             ),
           ),
@@ -1469,9 +1505,10 @@ Widget _buildVideoPlayer(String url) {
 @override
 void dispose() {
   // Clean up video/audio controllers
-  _audioPlayer?.dispose();
-  _videoPlayerController?.dispose();
+  _audioPlayer = AudioPlayer(); // Initialize immediately
+  _initAudioPlayer();
   _chewieController?.dispose();
+  _audioPlayer.dispose(); 
   
   // Dispose all flick managers
   _flickManagers.forEach((_, manager) => manager.dispose());
@@ -1490,41 +1527,99 @@ Future<void> _initializeVideoPlayer(String url) async {
   // Do nothing, just log
   debugPrint('Video player initialization skipped for URL: $url');
 }
-// 1. First, ensure the audio player is properly initialized and not null
-void _initAudioPlayer() {
-  if (_audioPlayer == null) {
-    _audioPlayer = AudioPlayer();
+Future<void> _initAudioPlayer() async {
+  if (_isPlayerInitialized) return;
+
+  try {
+    await _audioPlayer.setReleaseMode(audio.ReleaseMode.stop);
     
-    // Set up error handler
-    _audioPlayer?.onPlayerError.listen((error) {
+    _audioPlayer.onPlayerStateChanged.listen((state) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Audio playback error: $error')),
-        );
+        setState(() {
+          _isAudioPlaying = state == audio.PlayerState.playing;
+        });
       }
     });
-    
-    // Set up completion handler
-    _audioPlayer?.onPlayerComplete.listen((_) {
+
+    _audioPlayer.onPlayerError.listen((error) {
       if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Audio error: ${error.message}')),
+        );
         setState(() {
           _isAudioPlaying = false;
           _currentlyPlayingUrl = null;
         });
       }
     });
+
+    _isPlayerInitialized = true;
+  } catch (e) {
+    debugPrint('Audio player init error: $e');
   }
 }
+Future<void> _playAudio(String url) async {
+  try {
+    // Add URL validation
+    if (url == null || url.isEmpty) {
+      throw Exception('Audio URL is empty');
+    }
+    
+    // Print URL for debugging
+    debugPrint('Attempting to play audio from: $url');
+    
+    setState(() => _isAudioLoading = true);
+    
+    if (!_isPlayerInitialized) await _initAudioPlayer();
+    
+    if (_isAudioPlaying) {
+      await _audioPlayer.stop();
+    }
+
+    setState(() {
+      _currentlyPlayingUrl = url;
+    });
+
+    await _audioPlayer.play(audio.UrlSource(url));
+  } catch (e) {
+    debugPrint('Audio play error: $e');
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Failed to play audio: ${e.toString()}')),
+      );
+    }
+    setState(() {
+      _isAudioPlaying = false;
+      _currentlyPlayingUrl = null;
+    });
+  } finally {
+    if (mounted) {
+      setState(() => _isAudioLoading = false);
+    }
+  }
+}
+// Stop audio playback
+Future<void> _stopAudio() async {
+  try {
+    await _audioPlayer?.stop();
+    setState(() {
+      _isAudioPlaying = false;
+      _currentlyPlayingUrl = null;
+    });
+  } catch (e) {
+    debugPrint('Error stopping audio: $e');
+  }
+}
+
 // 3. Debugging method to check URL validity
 void _debugAudioUrl(String? url) {
   print("Audio URL: $url");
   print("URL validity: ${url != null && url.isNotEmpty}");
   // Add more validation as needed
 }
-// 2. Update the play method with better null checks and error handling
-Widget _buildAudioPlayer(String? url) {
-  // Validate URL early
-  final bool isValidUrl = url != null && url.isNotEmpty;
+// Build audio player widget
+Widget _buildAudioPlayer(String url) {
+  final isCurrentAudio = _currentlyPlayingUrl == url;
   
   return Container(
     width: 300,
@@ -1538,91 +1633,34 @@ Widget _buildAudioPlayer(String? url) {
             Icon(
               Icons.audiotrack,
               size: 40,
-              color: isValidUrl && _currentlyPlayingUrl == url ? Colors.blue : Colors.grey,
+              color: isCurrentAudio ? Colors.blue : Colors.grey,
             ),
             const SizedBox(width: 16),
-            Column(
-              children: [
-                Row(
-                  children: [
-                    IconButton(
-                      icon: Icon(
-                        _isAudioPlaying && _currentlyPlayingUrl == url
-                            ? Icons.pause
-                            : Icons.play_arrow,
-                        color: const Color(0xFF003366),
-                      ),
-                      onPressed: isValidUrl ? () async {
-                        // Ensure we have a player instance
-                        _initAudioPlayer();
-                        
-                        if (_isAudioPlaying && _currentlyPlayingUrl == url) {
-                          // Pause current playback
-                          await _audioPlayer?.pause();
-                          setState(() {
-                            _isAudioPlaying = false;
-                          });
-                        } else {
-                          // Stop any currently playing audio
-                          if (_audioPlayer != null) {
-                            await _audioPlayer!.stop();
-                          }
-                          
-                          try {
-                            // Extra validation check
-                            if (url == null || url.isEmpty) {
-                              throw Exception("Invalid audio URL");
-                            }
-                            
-                            // Create a valid URL source
-                            final audioSource = UrlSource(url);
-                            
-                            // Play the audio with proper error handling
-                            if (_audioPlayer != null) {
-                              await _audioPlayer!.play(audioSource);
-                              setState(() {
-                                _isAudioPlaying = true;
-                                _currentlyPlayingUrl = url;
-                              });
-                            } else {
-                              throw Exception("Audio player not initialized");
-                            }
-                          } catch (e) {
-                            // Handle and display the error
-                            print("Audio playback error: $e");
-                            ScaffoldMessenger.of(context).showSnackBar(
-                              SnackBar(content: Text('Error playing audio: $e')),
-                            );
-                          }
-                        }
-                      } : null, // Disable button if URL is invalid
-                    ),
-                    IconButton(
-                      icon: const Icon(Icons.stop, color: Color(0xFF003366)),
-                      onPressed: (_isAudioPlaying && isValidUrl) ? () async {
-                        if (_audioPlayer != null) {
-                          await _audioPlayer!.stop();
-                          if (mounted) {
-                            setState(() {
-                              _isAudioPlaying = false;
-                              _currentlyPlayingUrl = null;
-                            });
-                          }
-                        }
-                      } : null, // Disable button if not playing
-                    ),
-                  ],
-                ),
-              ],
+            IconButton(
+              icon: Icon(
+                _isAudioPlaying && isCurrentAudio ? Icons.pause : Icons.play_arrow,
+                color: const Color(0xFF003366),
+              ),
+              onPressed: () async {
+
+                if (_isAudioPlaying && isCurrentAudio) {
+                    await _audioPlayer.pause(); // Fixed - no null check needed
+                } else {
+                  await _playAudio(url);
+                }
+              },
             ),
+                    IconButton(
+            icon: const Icon(Icons.stop, color: Color(0xFF003366)),
+            onPressed: _isAudioPlaying && isCurrentAudio ? _stopAudio : null,
+          ),
           ],
         ),
         const SizedBox(height: 16),
         ElevatedButton(
-          onPressed: isValidUrl ? () => _handleFileDownload(url!) : null,
+          onPressed: () => _handleFileDownload(url),
           style: ElevatedButton.styleFrom(
             backgroundColor: const Color(0xFF003366),
-            disabledBackgroundColor: Colors.grey,
           ),
           child: const Text('Download Audio'),
         ),
@@ -1630,6 +1668,8 @@ Widget _buildAudioPlayer(String? url) {
     ),
   );
 }
+
+
 
 Future<void> _handleFileDownload(String url) async {
   if (kIsWeb) {
