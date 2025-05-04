@@ -21,17 +21,17 @@ import 'package:path/path.dart' as path;
 import 'package:fluttertoast/fluttertoast.dart';
 import 'package:gallery_saver/gallery_saver.dart';
 import 'dart:io';
-
+import 'package:audio_waveforms/audio_waveforms.dart' as audio_waveforms;
 import 'package:flutter/material.dart';
-import 'dart:io' if (dart.library.html) 'dart:html' as html;
+import 'package:audioplayers/audioplayers.dart' as audio;
 import 'package:flutter/foundation.dart';
 import 'package:dio/dio.dart';
 // For web audio
-import 'dart:ui' as ui;
+
+
 
 import 'package:audioplayers/audioplayers.dart';
-import 'package:audioplayers/audioplayers.dart' as audio;
-import 'package:audio_waveforms/audio_waveforms.dart' as waveforms;
+
 import 'dart:typed_data';  // For Uint8List if you need it elsewhere
  
 import 'dart:io';
@@ -46,12 +46,13 @@ import 'package:just_audio/just_audio.dart';
 
 
 
+
 class CaseDetailScreen extends StatefulWidget {
   final String incidentId;
 
-  
+  late PlayerController _audioController;
 
-  const CaseDetailScreen({
+  CaseDetailScreen({
     Key? key,
     required this.incidentId,
   }) : super(key: key);
@@ -79,19 +80,23 @@ class _CaseDetailScreenState extends State<CaseDetailScreen> {
   bool _isLoadingFiles = false;
   VideoPlayerController? _videoPlayerController;
   ChewieController? _chewieController;
-  PlayerController? _audioController;
+
   bool _isVideoLoading = false;
   Map<String, FlickManager> _flickManagers = {};
   bool _videoInitialized = false;
 final AccessControlService _accessControlService = AccessControlService();
 bool _hasAccess = false;
 bool _checkingAccess = true;
-
+late PlayerController _audioController;
+  // Audio player variables
+// In your class declaration section:
 late audio.AudioPlayer _audioPlayer;
 bool _isAudioPlaying = false;
 String? _currentlyPlayingUrl;
 bool _isPlayerInitialized = false;
-bool _isAudioLoading = false; // Add this line
+bool _isAudioLoading = false;
+
+  
 
 
 
@@ -139,10 +144,9 @@ bool _isAudioLoading = false; // Add this line
 void initState() {
   super.initState();
   _checkAccess();
-  _audioPlayer = audio.AudioPlayer(); 
-   if (!kIsWeb) {
-    _initAudioPlayer();
-  }
+   _audioPlayer = audio.AudioPlayer();
+ _initAudioPlayer();
+ _audioController = PlayerController();
   WidgetsBinding.instance.addPostFrameCallback((_) async {
     // Clear existing SnackBars when the screen loads
     if (mounted) {
@@ -1624,11 +1628,8 @@ void dispose() {
 }
 Future<void> _initAudioPlayer() async {
   try {
-    // Initialize audio player for mobile
-    _audioPlayer = audio.AudioPlayer();
-    
     // Set up event listeners
-    _audioPlayer.onPlayerStateChanged.listen((state) {
+    _audioPlayer.onPlayerStateChanged.listen((audio.PlayerState state) {
       if (mounted) {
         setState(() {
           _isAudioPlaying = state == audio.PlayerState.playing;
@@ -1636,7 +1637,7 @@ Future<void> _initAudioPlayer() async {
       }
     });
     
-    _audioPlayer.onPlayerComplete.listen((event) {
+    _audioPlayer.onPlayerComplete.listen((_) {
       if (mounted) {
         setState(() {
           _isAudioPlaying = false;
@@ -1656,52 +1657,50 @@ Future<void> _initAudioPlayer() async {
     }
   }
 }
-
+// Audio playback control methods
 Future<void> _playAudio(String url) async {
+  if (_currentlyPlayingUrl == url && _isAudioPlaying) {
+    await _audioPlayer.pause();
+    return;
+  }
+  
+  setState(() {
+    _isAudioLoading = true;
+  });
+  
   try {
-    if (kIsWeb) {
-      // Use url_launcher for web audio
-      final Uri uri = Uri.parse(url);
-      if (await canLaunchUrl(uri)) {
-        await launchUrl(uri, mode: LaunchMode.externalApplication);
-      }
-    } else {
-      // Mobile implementation
-      setState(() => _isAudioLoading = true);
-      
-      if (!_isPlayerInitialized) {
-        await _initAudioPlayer();
-      }
-      
-      if (_isAudioPlaying) {
-        await _audioPlayer.stop();
-      }
-      
-      setState(() => _currentlyPlayingUrl = url);
-      await _audioPlayer.play(UrlSource(url));
+    if (_currentlyPlayingUrl != url) {
+      await _audioPlayer.stop();
+      await _audioPlayer.setSourceUrl(url);
+      _currentlyPlayingUrl = url;
     }
+    
+    await _audioPlayer.resume();
   } catch (e) {
     debugPrint('Error playing audio: $e');
-    if (mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Failed to play audio: ${e.toString()}')),
-      );
-    }
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text('Error playing audio file'))
+    );
   } finally {
-    if (!kIsWeb && mounted) {
-      setState(() => _isAudioLoading = false);
+    if (mounted) {
+      setState(() {
+        _isAudioLoading = false;
+      });
     }
   }
 }
-Future<void> _stopAudio() async {
-  if (_audioPlayer != null) {
-    await _audioPlayer.stop();
-    setState(() {
-      _isAudioPlaying = false;
-      _currentlyPlayingUrl = null;
-    });
+
+Future<void> _pauseAudio() async {
+  if (_isAudioPlaying) {
+    await _audioPlayer.pause();
   }
 }
+
+Future<void> _stopAudio() async {
+  await _audioPlayer.stop();
+  _currentlyPlayingUrl = null;
+}
+  
 // 3. Debugging method to check URL validity
 void _debugAudioUrl(String? url) {
   print("Audio URL: $url");
@@ -2093,7 +2092,7 @@ Color _getPriorityColor(String? priority, String? incidentType) {
       return Colors.grey;
   }
 }
-
+  
 @override
 Widget build(BuildContext context) {
   return Scaffold(
