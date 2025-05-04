@@ -21,16 +21,28 @@ import 'package:path/path.dart' as path;
 import 'package:fluttertoast/fluttertoast.dart';
 import 'package:gallery_saver/gallery_saver.dart';
 import 'dart:io';
-import 'package:flutter/foundation.dart' show kIsWeb;
+
 import 'package:flutter/material.dart';
-import 'dart:html' as html;
+import 'dart:io' if (dart.library.html) 'dart:html' as html;
+import 'package:flutter/foundation.dart';
 import 'package:dio/dio.dart';
-import 'dart:js' as js;
+// For web audio
 import 'dart:ui' as ui;
-import 'package:flutter_web_plugins/flutter_web_plugins.dart';
+
 import 'package:audioplayers/audioplayers.dart';
 import 'package:audioplayers/audioplayers.dart' as audio;
 import 'package:audio_waveforms/audio_waveforms.dart' as waveforms;
+import 'dart:typed_data';  // For Uint8List if you need it elsewhere
+ 
+import 'dart:io';
+import 'dart:typed_data';
+
+import 'package:path_provider/path_provider.dart';
+import 'package:share_plus/share_plus.dart';
+import 'package:url_launcher/url_launcher.dart';
+import 'package:just_audio/just_audio.dart';
+
+
 
 
 
@@ -45,6 +57,7 @@ class CaseDetailScreen extends StatefulWidget {
   }) : super(key: key);
 
   static String routeName = 'CaseDetail';
+  
   static String routePath = '/case-detail/:incidentId';
 
   @override
@@ -79,6 +92,7 @@ bool _isAudioPlaying = false;
 String? _currentlyPlayingUrl;
 bool _isPlayerInitialized = false;
 bool _isAudioLoading = false; // Add this line
+
 
 
   // Status options for dropdown
@@ -126,7 +140,9 @@ void initState() {
   super.initState();
   _checkAccess();
   _audioPlayer = audio.AudioPlayer(); 
-  
+   if (!kIsWeb) {
+    _initAudioPlayer();
+  }
   WidgetsBinding.instance.addPostFrameCallback((_) async {
     // Clear existing SnackBars when the screen loads
     if (mounted) {
@@ -605,26 +621,17 @@ Future<void> _handleVideoDownload(String url) async {
 
 
 Future<void> _downloadVideoWeb(String url) async {
+  if (!kIsWeb) return;
+  
   try {
     setState(() {
       _isSubmitting = true;
     });
     
-    // Simplest approach - create a hidden anchor with download attribute
-    final jsCode = '''
-      (function() {
-        var a = document.createElement('a');
-        a.href = '$url';
-        a.download = '${url.split('/').last.replaceAll("'", "")}';
-        document.body.appendChild(a);
-        a.click();
-        document.body.removeChild(a);
-      })();
-    ''';
-    
-    // Execute the JS - make sure 'dart:js' is imported as js
-    // import 'dart:js' as js;
-    js.context.callMethod('eval', [jsCode]);
+    final Uri uri = Uri.parse(url);
+    if (await canLaunchUrl(uri)) {
+      await launchUrl(uri, mode: LaunchMode.externalApplication);
+    }
     
     setState(() {
       _isSubmitting = false;
@@ -632,9 +639,9 @@ Future<void> _downloadVideoWeb(String url) async {
     
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
-        content: Text('Download initiated. If nothing happens, the browser may have blocked automatic downloads.'),
+        content: Text('Download initiated in browser'),
         backgroundColor: Colors.green,
-        duration: Duration(seconds: 5),
+        duration: Duration(seconds: 3),
       ),
     );
   } catch (e) {
@@ -642,13 +649,57 @@ Future<void> _downloadVideoWeb(String url) async {
       _isSubmitting = false;
     });
     
-    print('Error starting download: $e');
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
         content: Text('Download failed: ${e.toString()}'),
         backgroundColor: Colors.red,
       ),
     );
+  }
+}
+
+Future<void> _downloadVideoMobile(String url) async {
+  try {
+    // Request storage permission
+    var status = await Permission.storage.request();
+    if (!status.isGranted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Storage permission denied')),
+      );
+      return;
+    }
+
+    // Get download directory
+    final directory = await getDownloadsDirectory() ?? await getTemporaryDirectory();
+    final filePath = '${directory.path}/${url.split('/').last}';
+    
+    // Download file
+    final response = await Dio().download(url, filePath,
+      onReceiveProgress: (received, total) {
+        // Show progress if needed
+      }
+    );
+
+   if (url.endsWith('.mp4')) {
+  await GallerySaver.saveVideo(filePath);
+} else if (url.endsWith('.jpg') || url.endsWith('.png')) {
+  await GallerySaver.saveImage(filePath);
+}
+
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text('File saved to ${directory.path}')),
+    );
+  } catch (e) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text('Download failed: ${e.toString()}')),
+    );
+  }
+}
+Future<void> _handleFileDownload(String url) async {
+  if (kIsWeb) {
+    await _downloadVideoWeb(url);
+  } else {
+    await _downloadVideoMobile(url);
   }
 }
 
@@ -1449,6 +1500,53 @@ Widget _buildMediaContent(Map<String, dynamic> file) {
   }
 }
 
+Future<void> _initializeVideoPlayer(String url) async {
+  if (kIsWeb) {
+    final Uri uri = Uri.parse(url);
+    if (await canLaunchUrl(uri)) {
+      await launchUrl(uri, mode: LaunchMode.externalApplication);
+    }
+    return;
+  }
+
+  // Mobile implementation
+  try {
+    setState(() => _isVideoLoading = true);
+    
+    _videoPlayerController?.dispose();
+    _chewieController?.dispose();
+    
+    _videoPlayerController = VideoPlayerController.network(url);
+    await _videoPlayerController!.initialize();
+    
+    _chewieController = ChewieController(
+      videoPlayerController: _videoPlayerController!,
+      autoPlay: false,
+      looping: false,
+      errorBuilder: (context, errorMessage) {
+        return Center(
+          child: Text(
+            errorMessage,
+            style: const TextStyle(color: Colors.white),
+          ),
+        );
+      },
+    );
+    
+    setState(() {
+      _isVideoLoading = false;
+      _videoInitialized = true;
+    });
+  } catch (e) {
+    setState(() => _isVideoLoading = false);
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Failed to load video: ${e.toString()}')),
+      );
+    }
+  }
+}
+
 Widget _buildVideoPlayer(String url) {
   if (_isVideoLoading) {
     return Container(
@@ -1505,7 +1603,7 @@ Widget _buildVideoPlayer(String url) {
 @override
 void dispose() {
   // Clean up video/audio controllers
-  _audioPlayer = AudioPlayer(); // Initialize immediately
+ // Initialize immediately
   _initAudioPlayer();
   _chewieController?.dispose();
   _audioPlayer.dispose(); 
@@ -1516,23 +1614,20 @@ void dispose() {
   
   // Clean up other controllers
   _audioController?.dispose();
+  _videoPlayerController?.dispose();
+  _flickManagers.forEach((_, manager) => manager.dispose());
+    _flickManagers.clear();
+    _noteController.dispose();
   _noteController.dispose();
   
   super.dispose();
 }
-
-
-// Placeholder method that doesn't use video_player
-Future<void> _initializeVideoPlayer(String url) async {
-  // Do nothing, just log
-  debugPrint('Video player initialization skipped for URL: $url');
-}
 Future<void> _initAudioPlayer() async {
-  if (_isPlayerInitialized) return;
-
   try {
-    await _audioPlayer.setReleaseMode(audio.ReleaseMode.stop);
+    // Initialize audio player for mobile
+    _audioPlayer = audio.AudioPlayer();
     
+    // Set up event listeners
     _audioPlayer.onPlayerStateChanged.listen((state) {
       if (mounted) {
         setState(() {
@@ -1540,77 +1635,73 @@ Future<void> _initAudioPlayer() async {
         });
       }
     });
-
-    _audioPlayer.onPlayerError.listen((error) {
+    
+    _audioPlayer.onPlayerComplete.listen((event) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Audio error: ${error.message}')),
-        );
         setState(() {
           _isAudioPlaying = false;
-          _currentlyPlayingUrl = null;
         });
       }
     });
-
-    _isPlayerInitialized = true;
+    
+    setState(() {
+      _isPlayerInitialized = true;
+    });
   } catch (e) {
-    debugPrint('Audio player init error: $e');
+    debugPrint('Error initializing audio player: $e');
+    if (mounted) {
+      setState(() {
+        _isPlayerInitialized = false;
+      });
+    }
   }
 }
+
 Future<void> _playAudio(String url) async {
   try {
-    // Add URL validation
-    if (url == null || url.isEmpty) {
-      throw Exception('Audio URL is empty');
+    if (kIsWeb) {
+      // Use url_launcher for web audio
+      final Uri uri = Uri.parse(url);
+      if (await canLaunchUrl(uri)) {
+        await launchUrl(uri, mode: LaunchMode.externalApplication);
+      }
+    } else {
+      // Mobile implementation
+      setState(() => _isAudioLoading = true);
+      
+      if (!_isPlayerInitialized) {
+        await _initAudioPlayer();
+      }
+      
+      if (_isAudioPlaying) {
+        await _audioPlayer.stop();
+      }
+      
+      setState(() => _currentlyPlayingUrl = url);
+      await _audioPlayer.play(UrlSource(url));
     }
-    
-    // Print URL for debugging
-    debugPrint('Attempting to play audio from: $url');
-    
-    setState(() => _isAudioLoading = true);
-    
-    if (!_isPlayerInitialized) await _initAudioPlayer();
-    
-    if (_isAudioPlaying) {
-      await _audioPlayer.stop();
-    }
-
-    setState(() {
-      _currentlyPlayingUrl = url;
-    });
-
-    await _audioPlayer.play(audio.UrlSource(url));
   } catch (e) {
-    debugPrint('Audio play error: $e');
+    debugPrint('Error playing audio: $e');
     if (mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('Failed to play audio: ${e.toString()}')),
       );
     }
-    setState(() {
-      _isAudioPlaying = false;
-      _currentlyPlayingUrl = null;
-    });
   } finally {
-    if (mounted) {
+    if (!kIsWeb && mounted) {
       setState(() => _isAudioLoading = false);
     }
   }
 }
-// Stop audio playback
 Future<void> _stopAudio() async {
-  try {
-    await _audioPlayer?.stop();
+  if (_audioPlayer != null) {
+    await _audioPlayer.stop();
     setState(() {
       _isAudioPlaying = false;
       _currentlyPlayingUrl = null;
     });
-  } catch (e) {
-    debugPrint('Error stopping audio: $e');
   }
 }
-
 // 3. Debugging method to check URL validity
 void _debugAudioUrl(String? url) {
   print("Audio URL: $url");
@@ -1670,30 +1761,14 @@ Widget _buildAudioPlayer(String url) {
 }
 
 
-
-Future<void> _handleFileDownload(String url) async {
-  if (kIsWeb) {
-    try {
-      final anchor = html.AnchorElement(href: url)
-        ..download = url.split('/').last
-        ..target = '_blank';
-      html.document.body?.children.add(anchor);
-      anchor.click();
-      html.document.body?.children.remove(anchor);
-    } catch (e) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Failed to download: ${e.toString()}')),
-      );
-    }
-  } else {
-    // Mobile download implementation
-    // ... (your existing mobile download code)
-  }
-}
-
-  // Generate and download case report as PDF
- Future<void> _downloadCaseReport() async {
+Future<void> _downloadCaseReport() async {
   try {
+    setState(() {
+      _isLoading = true;
+      _errorMessage = null;
+      _successMessage = null;
+    });
+
     // Create PDF document
     final pdf = pw.Document();
 
@@ -1701,168 +1776,253 @@ Future<void> _handleFileDownload(String url) async {
     final now = DateTime.now();
     final dateFormatted =
         '${now.day.toString().padLeft(2, '0')}/${now.month.toString().padLeft(2, '0')}/${now.year}';
+    
+    // Generate a shorter case ID for the filename
+    final shortCaseId = widget.incidentId.substring(
+        0, widget.incidentId.length > 8 ? 8 : widget.incidentId.length);
+    final fileName = 'case_report_$shortCaseId.pdf';
 
     // Build PDF content
     pdf.addPage(
-  pw.MultiPage(
-    pageFormat: PdfPageFormat.a4,
-    margin: const pw.EdgeInsets.all(32),
-    header: (pw.Context context) {
-      // Your existing header code
-        return pw.Container(
-    alignment: pw.Alignment.centerRight,
-    margin: const pw.EdgeInsets.only(bottom: 20),
-    child: pw.Column(
-      crossAxisAlignment: pw.CrossAxisAlignment.start,
-      children: [
-        pw.Row(
-          mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
-          children: [
-            pw.Text('PUBLIC SAFETY SYSTEM',
-                style: pw.TextStyle(
-                    fontSize: 28, fontWeight: pw.FontWeight.bold)),
-            pw.Text('CASE REPORT',
-                style: pw.TextStyle(
-                    fontSize: 24, fontWeight: pw.FontWeight.bold)),
-          ],
-        ),
-        pw.Divider(thickness: 2),
-      ],
-    ),
-  );
-    },
-    footer: (pw.Context context) {
-      return pw.Container(
-    alignment: pw.Alignment.centerRight,
-    margin: const pw.EdgeInsets.only(top: 20),
-    child: pw.Row(
-      mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
-      children: [
-        pw.Text('Generated on: $dateFormatted',
-            style: const pw.TextStyle(fontSize: 10)),
-        pw.Text('Page ${context.pageNumber} of ${context.pagesCount}',
-            style: const pw.TextStyle(fontSize: 10)),
-      ],
-    ),
-  );
-      // Your existing footer code
-    },
-    build: (pw.Context context) => [
-      // Case Summary Section
-      pw.Container(
-        padding: const pw.EdgeInsets.all(16),
-        decoration: pw.BoxDecoration(
-          border: pw.Border.all(),
-          borderRadius: const pw.BorderRadius.all(pw.Radius.circular(10)),
-        ),
-        child: pw.Column(
-          crossAxisAlignment: pw.CrossAxisAlignment.start,
-          children: [
-            pw.Text('CASE SUMMARY',
-                style: pw.TextStyle(
-                    fontSize: 18, fontWeight: pw.FontWeight.bold)),
-            pw.SizedBox(height: 10),
-            pw.Row(
-              mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
+      pw.MultiPage(
+        pageFormat: PdfPageFormat.a4,
+        margin: const pw.EdgeInsets.all(32),
+        header: (pw.Context context) {
+          return pw.Container(
+            alignment: pw.Alignment.centerRight,
+            margin: const pw.EdgeInsets.only(bottom: 20),
+            child: pw.Column(
+              crossAxisAlignment: pw.CrossAxisAlignment.start,
               children: [
-                pw.Expanded(
-                  flex: 1,
-                  child: pw.Text('Case ID:',
-                      style: pw.TextStyle(fontWeight: pw.FontWeight.bold)),
+                pw.Row(
+                  mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
+                  children: [
+                    pw.Text('PUBLIC SAFETY SYSTEM',
+                        style: pw.TextStyle(
+                            fontSize: 28, fontWeight: pw.FontWeight.bold)),
+                    pw.Text('CASE REPORT',
+                        style: pw.TextStyle(
+                            fontSize: 24, fontWeight: pw.FontWeight.bold)),
+                  ],
                 ),
-                pw.Expanded(
-                  flex: 2,
-                  child: pw.Text(widget.incidentId),
-                ),
+                pw.Divider(thickness: 2),
               ],
             ),
-            pw.SizedBox(height: 5),
-            pw.Row(
+          );
+        },
+        footer: (pw.Context context) {
+          return pw.Container(
+            alignment: pw.Alignment.centerRight,
+            margin: const pw.EdgeInsets.only(top: 20),
+            child: pw.Row(
               mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
               children: [
-                pw.Expanded(
-                  flex: 1,
-                  child: pw.Text('Incident Type:',
-                      style: pw.TextStyle(fontWeight: pw.FontWeight.bold)),
-                ),
-                pw.Expanded(
-                  flex: 2,
-                  child: pw.Text(_incidentData?.containsKey('incident_type') == true ? 
-                      (_incidentData!['incident_type'] ?? 'N/A') : 'N/A'),
-                ),
+                pw.Text('Generated on: $dateFormatted',
+                    style: const pw.TextStyle(fontSize: 10)),
+                pw.Text('Page ${context.pageNumber} of ${context.pagesCount}',
+                    style: const pw.TextStyle(fontSize: 10)),
               ],
             ),
-            // Add more rows for other case details
-          ],
-        ),
-      ),
-      pw.SizedBox(height: 20),
-      // Description Section
-      pw.Container(
-        padding: const pw.EdgeInsets.all(16),
-        decoration: pw.BoxDecoration(
-          border: pw.Border.all(),
-          borderRadius: const pw.BorderRadius.all(pw.Radius.circular(10)),
-        ),
-        child: pw.Column(
-          crossAxisAlignment: pw.CrossAxisAlignment.start,
-          children: [
-            pw.Text('INCIDENT DESCRIPTION',
-                style: pw.TextStyle(
-                    fontSize: 18, fontWeight: pw.FontWeight.bold)),
-            pw.SizedBox(height: 10),
-            pw.Text(_incidentData?.containsKey('description') == true ? 
-                (_incidentData!['description'] ?? 'No description provided') : 
-                'No description provided'),
-          ],
-        ),
-      ),
-    ],
-  ),
-);
-
-    // Save the PDF document - platform-agnostic approach
-    try {
-      // Generate the PDF bytes
-      final bytes = await pdf.save();
-      
-      // Try to save to file if path_provider is available
-      try {
-        final tempDir = await getTemporaryDirectory();
-        final file = File(
-            '${tempDir.path}/case_report_${widget.incidentId.substring(0, widget.incidentId.length > 8 ? 8 : widget.incidentId.length)}.pdf');
-        await file.writeAsBytes(bytes);
-
-        // Show success message with the file path
-        setState(() {
-          _successMessage = 'Case report generated and saved!';
-        });
-        
-        // Show a snackbar with the file location
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('PDF saved to: ${file.path}'),
-            duration: const Duration(seconds: 5),
+          );
+        },
+        build: (pw.Context context) => [
+          // Case Summary Section
+          pw.Container(
+            padding: const pw.EdgeInsets.all(16),
+            decoration: pw.BoxDecoration(
+              border: pw.Border.all(),
+              borderRadius: const pw.BorderRadius.all(pw.Radius.circular(10)),
+            ),
+            child: pw.Column(
+              crossAxisAlignment: pw.CrossAxisAlignment.start,
+              children: [
+                pw.Text('CASE SUMMARY',
+                    style: pw.TextStyle(
+                        fontSize: 18, fontWeight: pw.FontWeight.bold)),
+                pw.SizedBox(height: 10),
+                pw.Row(
+                  mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
+                  children: [
+                    pw.Expanded(
+                      flex: 1,
+                      child: pw.Text('Case ID:',
+                          style: pw.TextStyle(fontWeight: pw.FontWeight.bold)),
+                    ),
+                    pw.Expanded(
+                      flex: 2,
+                      child: pw.Text(widget.incidentId),
+                    ),
+                  ],
+                ),
+                pw.SizedBox(height: 5),
+                pw.Row(
+                  mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
+                  children: [
+                    pw.Expanded(
+                      flex: 1,
+                      child: pw.Text('Incident Type:',
+                          style: pw.TextStyle(fontWeight: pw.FontWeight.bold)),
+                    ),
+                    pw.Expanded(
+                      flex: 2,
+                      child: pw.Text(_incidentData?.containsKey('incident_type') == true ? 
+                          (_incidentData!['incident_type'] ?? 'N/A') : 'N/A'),
+                    ),
+                  ],
+                ),
+                // Add more rows for other case details
+              ],
+            ),
           ),
-        );
-      } catch (fileError) {
-        // If file saving fails, still consider it a success since we generated the PDF
-        setState(() {
-          _successMessage = 'PDF generated but could not be saved to a file.';
-        });
-        print('Error saving to file: $fileError');
-      }
-    } catch (e) {
-      setState(() {
-        _errorMessage = 'Error saving PDF: $e';
-      });
-      print('Error saving PDF: $e');
+          pw.SizedBox(height: 20),
+          // Description Section
+          pw.Container(
+            padding: const pw.EdgeInsets.all(16),
+            decoration: pw.BoxDecoration(
+              border: pw.Border.all(),
+              borderRadius: const pw.BorderRadius.all(pw.Radius.circular(10)),
+            ),
+            child: pw.Column(
+              crossAxisAlignment: pw.CrossAxisAlignment.start,
+              children: [
+                pw.Text('INCIDENT DESCRIPTION',
+                    style: pw.TextStyle(
+                        fontSize: 18, fontWeight: pw.FontWeight.bold)),
+                pw.SizedBox(height: 10),
+                pw.Text(_incidentData?.containsKey('description') == true ? 
+                    (_incidentData!['description'] ?? 'No description provided') : 
+                    'No description provided'),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+
+    // Generate the PDF bytes
+    final bytes = await pdf.save();
+    
+    // Platform-specific directory handling
+    Directory? directory;
+    if (Platform.isAndroid) {
+      // Use downloads directory for Android
+      directory = await getExternalStorageDirectory();
+    } else if (Platform.isIOS) {
+      // Use documents directory for iOS
+      directory = await getApplicationDocumentsDirectory();
+    } else {
+      // Fallback to temporary directory
+      directory = await getTemporaryDirectory();
     }
+    
+    if (directory == null) {
+      throw Exception("Couldn't access device storage");
+    }
+    
+    // Create the file
+    final file = File('${directory.path}/$fileName');
+    await file.writeAsBytes(bytes);
+    
+    // Show success message
+    setState(() {
+      _isLoading = false;
+      _successMessage = 'Case report generated!';
+    });
+    
+    // Show options to view/share the PDF
+    await _showPdfOptions(file, bytes);
+    
   } catch (e) {
     setState(() {
+      _isLoading = false;
       _errorMessage = 'Error generating case report: $e';
     });
-    print('Error generating case report: $e');
+    print('Error in _downloadCaseReport: $e');
+  }
+}
+
+// Method to show options for handling the PDF
+Future<void> _showPdfOptions(File file, List<int> pdfBytes) async {
+  if (!mounted) return;
+  
+  showModalBottomSheet(
+    context: context,
+    builder: (BuildContext bc) {
+      return SafeArea(
+        child: Wrap(
+          children: <Widget>[
+            ListTile(
+              leading: const Icon(Icons.remove_red_eye),
+              title: const Text('View PDF'),
+              onTap: () async {
+                Navigator.pop(context);
+                await _viewPdf(file);
+              },
+            ),
+            ListTile(
+              leading: const Icon(Icons.share),
+              title: const Text('Share PDF'),
+              onTap: () async {
+                Navigator.pop(context);
+                await _sharePdf(file);
+              },
+            ),
+            ListTile(
+              leading: const Icon(Icons.info_outline),
+              title: Text('File saved to: ${file.path}'),
+              onTap: () {
+                Navigator.pop(context);
+                ScaffoldMessenger.of(context).showSnackBar(
+                  SnackBar(
+                    content: Text('PDF saved to: ${file.path}'),
+                    duration: const Duration(seconds: 5),
+                  ),
+                );
+              },
+            ),
+          ],
+        ),
+      );
+    },
+  );
+}
+
+// Method to view PDF using url_launcher instead of open_file
+Future<void> _viewPdf(File file) async {
+  try {
+    final Uri uri = Uri.file(file.path);
+    if (!await launchUrl(uri, mode: LaunchMode.externalApplication)) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Could not open file'),
+        ),
+      );
+    }
+  } catch (e) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text('Error opening file: $e'),
+      ),
+    );
+  }
+}
+
+// Method to share PDF
+Future<void> _sharePdf(File file) async {
+  try {
+    await Share.shareXFiles(
+      [XFile(file.path)],
+      text: 'Case Report: ${widget.incidentId}',
+    );
+  } catch (e) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text('Error sharing file: $e'),
+      ),
+    );
   }
 }
 // Add this function to your _CaseDetailScreenState class to determine priority based on incident type
@@ -2506,6 +2666,3 @@ Widget build(BuildContext context) {
   );
 }}
 
-extension on AudioPlayer? {
-  get onPlayerError => null;
-}

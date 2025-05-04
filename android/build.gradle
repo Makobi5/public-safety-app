@@ -10,7 +10,34 @@ subprojects {
     project.buildDir = "${rootProject.buildDir}/${project.name}"
 }
 subprojects {
-    project.evaluationDependsOn(":app")
+    afterEvaluate {project ->
+        if (project.name == 'gallery_saver') {
+            android {
+                namespace "carnegietechnologies.gallery_saver"
+            }
+        }
+        if (project.name == 'flutter_local_notifications') {
+            android {
+                namespace "com.dexterous.flutterlocalnotifications"
+            }
+        }
+        if (project.name == 'record') {
+            android {
+                namespace "com.llfbandit.record"  // Adjust this if the actual package is different
+            }
+        }
+        // Handle any plugin that might be missing a namespace
+        if (project.hasProperty('android') && !project.android.hasProperty('namespace') 
+            && new File(project.projectDir, 'src/main/AndroidManifest.xml').exists()) {
+            def manifest = new XmlParser().parse(new File(project.projectDir, 'src/main/AndroidManifest.xml'))
+            def packageName = manifest.@package
+            if (packageName) {
+                android {
+                    namespace packageName
+                }
+            }
+        }
+    }
 }
 
 tasks.register("clean", Delete) {

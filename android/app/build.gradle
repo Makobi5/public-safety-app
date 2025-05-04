@@ -7,7 +7,7 @@ plugins {
 
 android {
     namespace = "com.example.public_safety_app"
-    compileSdk = flutter.compileSdkVersion
+    compileSdkVersion 35
     ndkVersion = flutter.ndkVersion
 
     compileOptions {
