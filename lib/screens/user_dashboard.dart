@@ -1,22 +1,15 @@
-// lib/screens/user_dashboard.dart
-
 import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import '../service/auth_service.dart';
 import 'incident_report_form.dart';
-import 'report_details_screen.dart'; // New import for report details
-import 'package:flutter/widgets.dart' as widgets;
+import 'report_details_screen.dart';
 import 'package:record/record.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:path_provider/path_provider.dart';
 import 'dart:io';
 import 'package:geocoding/geocoding.dart';
 import 'package:geolocator/geolocator.dart';
-import 'package:flutter/foundation.dart' show kIsWeb;
-import 'package:flutter_sound_web/flutter_sound_web.dart';
-import 'package:flutter_sound_platform_interface/flutter_sound_recorder_platform_interface.dart';
-import 'dart:typed_data';
-import 'dart:html' as html;
+
 
 
 
@@ -86,70 +79,47 @@ class _UserDashboardState extends State<UserDashboard> {
 
 Future<void> _startRecording() async {
   try {
-    // Check and request permissions
-    if (!kIsWeb && !(await Permission.microphone.request().isGranted)) {
+    // Check and request permissions for mobile only
+    if (!(await Permission.microphone.request().isGranted)) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Microphone permission denied')),
       );
       return;
     }
 
-    // Platform-specific file path handling
-    String filePath;
-    if (kIsWeb) {
-      // Web-specific path
-      filePath = 'emergency_recording_${DateTime.now().millisecondsSinceEpoch}.aac';
-    } else {
-      // Mobile path
-      try {
-        Directory appDocDir = await getApplicationDocumentsDirectory();
-        filePath = '${appDocDir.path}/emergency_recording_${DateTime.now().millisecondsSinceEpoch}.aac';
-      } catch (e) {
-        print('Error getting application directory: $e');
-        Directory tempDir = await getTemporaryDirectory();
-        filePath = '${tempDir.path}/emergency_recording_${DateTime.now().millisecondsSinceEpoch}.aac';
-      }
-    }
+    // Mobile path only
+    Directory appDocDir = await getApplicationDocumentsDirectory();
+    String filePath = '${appDocDir.path}/emergency_recording_${DateTime.now().millisecondsSinceEpoch}.aac';
 
     // Check if the recorder is already initialized and can record
-    try {
-      if (kIsWeb || await _audioRecorder.hasPermission()) {
-        setState(() {
-          _isRecording = true;
-        });
-
-        await _audioRecorder.start(
-          path: filePath,
-          encoder: AudioEncoder.aacLc,
-          bitRate: 128000,
-          samplingRate: 44100,
-        );
-
-        setState(() {
-          _audioPath = filePath;
-        });
-        
-        // Show recording indicator
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('Recording in progress... Press the button again to stop and submit.'),
-            duration: Duration(seconds: 3),
-            backgroundColor: Colors.red,
-          ),
-        );
-      } else {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Recording permission not available')),
-        );
-      }
-    } catch (recorderError) {
-      print('Error initializing recorder: $recorderError');
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Recording initialization error: $recorderError')),
-      );
+    if (await _audioRecorder.hasPermission()) {
       setState(() {
-        _isRecording = false;
+        _isRecording = true;
       });
+
+      await _audioRecorder.start(
+        path: filePath,
+        encoder: AudioEncoder.aacLc,
+        bitRate: 128000,
+        samplingRate: 44100,
+      );
+
+      setState(() {
+        _audioPath = filePath;
+      });
+      
+      // Show recording indicator
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Recording in progress... Press the button again to stop and submit.'),
+          duration: Duration(seconds: 3),
+          backgroundColor: Colors.red,
+        ),
+      );
+    } else {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Recording permission not available')),
+      );
     }
   } catch (e) {
     print('Recording error: $e');
@@ -176,39 +146,13 @@ Future<void> _stopRecording() async {
       ),
     );
     
- if (kIsWeb) {
-  // Web-specific handling
-  final result = await _audioRecorder.stop();
-  
-  if (result != null) {
-    Uint8List? audioBytes;
+    // Stop recording and get the file path
+    final result = await _audioRecorder.stop();
     
-    // Handle different return types for web - with proper type checking
-    if (result is Uint8List) {
-      // Already in the correct format
-      audioBytes = result as Uint8List?;
-    } else if (result is List) {
-      // More generic List handling
-      try {
-        final List<int> intList = result.map((item) => item as int).toList();
-        audioBytes = Uint8List.fromList(intList);
-      } catch (e) {
-        print('Error converting List to Uint8List: $e');
-        // Fallback to dummy data
-        audioBytes = Uint8List(1024);
-      }
-    } else if (result is String) {
-      // For testing in Chrome, just create a dummy audio file
-      print('Creating dummy audio data for testing');
-      audioBytes = Uint8List(1024); // 1KB of zeros for testing
+    if (result != null) {
+      // Submit the recording using the file path
+      await _submitEmergencyReport(result);
     }
-    
-    // If we successfully got audio bytes, submit them
-    if (audioBytes != null) {
-      await _submitEmergencyReport('web_recording.aac', audioBytes);
-    }
-  }
-}
   } catch (e) {
     print('Stop recording error: $e');
     ScaffoldMessenger.of(context).showSnackBar(
@@ -216,46 +160,48 @@ Future<void> _stopRecording() async {
     );
   }
 }
-Future<void> _submitEmergencyReport(String audioPath, [Uint8List? webAudioBytes]) async {
+Future<void> _submitEmergencyReport(String audioPath) async {
   try {
     setState(() => _isRefreshing = true);
     
     // 1. Get location
     String locationText = "Unknown location";
+    double latitude = 0.0;
+    double longitude = 0.0;
+    
     try {
-      if (!kIsWeb) {
-        // Check location permission for mobile
-        LocationPermission permission = await Geolocator.checkPermission();
-        if (permission == LocationPermission.denied) {
-          permission = await Geolocator.requestPermission();
-        }
+      // Check location permission for mobile
+      LocationPermission permission = await Geolocator.checkPermission();
+      if (permission == LocationPermission.denied) {
+        permission = await Geolocator.requestPermission();
+      }
+      
+      if (permission != LocationPermission.denied && 
+          permission != LocationPermission.deniedForever) {
+        Position position = await Geolocator.getCurrentPosition(
+          desiredAccuracy: LocationAccuracy.high
+        );
         
-        if (permission != LocationPermission.denied && 
-            permission != LocationPermission.deniedForever) {
-          Position position = await Geolocator.getCurrentPosition(
-            desiredAccuracy: LocationAccuracy.high
+        // Store coordinates for the DB
+        latitude = position.latitude;
+        longitude = position.longitude;
+        
+        // Try to get address from coordinates
+        try {
+          List<Placemark> placemarks = await placemarkFromCoordinates(
+            position.latitude, 
+            position.longitude
           );
           
-          // Try to get address from coordinates
-          try {
-            List<Placemark> placemarks = await placemarkFromCoordinates(
-              position.latitude, 
-              position.longitude
-            );
-            
-            if (placemarks.isNotEmpty) {
-              final place = placemarks.first;
-              locationText = '${place.street}, ${place.locality}, ${place.country}';
-            } else {
-              locationText = 'Lat: ${position.latitude}, Long: ${position.longitude}';
-            }
-          } catch (e) {
+          if (placemarks.isNotEmpty) {
+            final place = placemarks.first;
+            locationText = '${place.street}, ${place.locality}, ${place.country}';
+          } else {
             locationText = 'Lat: ${position.latitude}, Long: ${position.longitude}';
           }
+        } catch (e) {
+          locationText = 'Lat: ${position.latitude}, Long: ${position.longitude}';
         }
-      } else {
-        // Web location is handled differently
-        locationText = 'Location Services not available in web';
       }
     } catch (e) {
       print('Error getting location: $e');
@@ -267,30 +213,16 @@ Future<void> _submitEmergencyReport(String audioPath, [Uint8List? webAudioBytes]
     final supabase = Supabase.instance.client;
     final fileName = 'audio_${DateTime.now().millisecondsSinceEpoch}.aac';
 
-    if (kIsWeb && webAudioBytes != null) {
-      // Convert to List<int> if needed
-      final bytes = webAudioBytes is List<int> 
-          ? Uint8List.fromList(webAudioBytes) 
-          : webAudioBytes;
-      
-      final uploadResponse = await supabase.storage
-          .from('emergency-recordings')
-          .uploadBinary(fileName, bytes);
-      
-      audioUrl = supabase.storage
-          .from('emergency-recordings')
-          .getPublicUrl(fileName);
-    } else if (!kIsWeb) {
-      final file = File(audioPath);
-      final bytes = await file.readAsBytes();
-      await supabase.storage
-          .from('emergency-recordings')
-          .uploadBinary(fileName, bytes);
-      
-      audioUrl = supabase.storage
-          .from('emergency-recordings')
-          .getPublicUrl(fileName);
-    }
+    // Mobile file upload
+    final file = File(audioPath);
+    final bytes = await file.readAsBytes();
+    await supabase.storage
+        .from('emergency-recordings')
+        .uploadBinary(fileName, bytes);
+    
+    audioUrl = supabase.storage
+        .from('emergency-recordings')
+        .getPublicUrl(fileName);
 
     // 3. Create report
     final user = AuthService.currentUser;
@@ -299,40 +231,40 @@ Future<void> _submitEmergencyReport(String audioPath, [Uint8List? webAudioBytes]
       final referenceNum = 'E${DateTime.now().millisecondsSinceEpoch.toString().substring(7)}';
       
       // Create the incident record
-            final incidentData = {
-            'user_id': user.id,
-            'title': 'Emergency Report',
-            'description': 'Emergency audio recording submitted',
-            'incident_type': 'emergency',
-            'status': 'submitted',
-            'emergency_audio': audioUrl,
-            'is_emergency': true,
-            'is_anonymous': false, // Default for emergency reports
-            'created_at': DateTime.now().toIso8601String(),
-            'updated_at': DateTime.now().toIso8601String(),
-            'incident_date': DateTime.now().toIso8601String(),
-            'incident_time': '${DateTime.now().hour}:${DateTime.now().minute}',
-            
-            // Location fields - you should populate these from your location service
-            'region': 'Unknown', // Default, should be updated with real data
-            'district': 'Unknown', // Default, should be updated with real data
-            'village': 'Unknown', // Default, should be updated with real data
-            'latitude': 0.0, // Default, should be updated with real GPS data
-            'longitude': 0.0, // Default, should be updated with real GPS data
-            'location_address': 'Location not specified', // Default
-            
-            // Optional fields that can be null
-            'additional_location': null,
-            'additional_notes': null,
-            'file_urls': null,
-            'witness_info': null,
-            'landmark': null,
-            'reported_station_id': null,
-            'station_id': null,
-            'police_station_id': null,
-            'police_station_name': null,
-            'police_station_assigned_at': null, // Note: You should fix this column name in DB
-          };
+      final incidentData = {
+        'user_id': user.id,
+        'title': 'Emergency Report',
+        'description': 'Emergency audio recording submitted',
+        'incident_type': 'emergency',
+        'status': 'submitted',
+        'emergency_audio': audioUrl,
+        'is_emergency': true,
+        'is_anonymous': false, // Default for emergency reports
+        'created_at': DateTime.now().toIso8601String(),
+        'updated_at': DateTime.now().toIso8601String(),
+        'incident_date': DateTime.now().toIso8601String(),
+        'incident_time': '${DateTime.now().hour}:${DateTime.now().minute}',
+        
+        // Location fields with actual values from GPS
+        'region': 'Unknown', // These should be populated based on regional data if available
+        'district': 'Unknown',
+        'village': 'Unknown',
+        'latitude': latitude,
+        'longitude': longitude,
+        'location_address': locationText,
+        
+        // Optional fields that can be null
+        'additional_location': null,
+        'additional_notes': null,
+        'file_urls': null,
+        'witness_info': null,
+        'landmark': null,
+        'reported_station_id': null,
+        'station_id': null,
+        'police_station_id': null,
+        'police_station_name': null,
+        'police_station_assigned_at': null,
+      };
       
       final response = await supabase
           .from('incidents')
@@ -348,7 +280,6 @@ Future<void> _submitEmergencyReport(String audioPath, [Uint8List? webAudioBytes]
           'performed_by': user.id,
           'details': 'Emergency audio recording received and submitted for review',
           'created_at': DateTime.now().toIso8601String(),
-          
         });
         
         ScaffoldMessenger.of(context).showSnackBar(
@@ -496,7 +427,7 @@ Widget build(BuildContext context) {
         : RefreshIndicator(
             onRefresh: _fetchActiveReports,
             child: SafeArea(
-              child: widgets.ListView(
+              child: ListView(
                 padding: EdgeInsets.zero,
                 children: [
                   // Welcome banner
@@ -798,7 +729,7 @@ Widget build(BuildContext context) {
                   
                   // Report List (if there are reports)
                   if (_activeReports.isNotEmpty)
-                    widgets.ListView.separated(
+                    ListView.separated(
                       shrinkWrap: true,
                       physics: const NeverScrollableScrollPhysics(),
                       itemCount: _activeReports.length,

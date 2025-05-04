@@ -22,7 +22,9 @@ import '/config/api_keys.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
 import 'package:google_maps_webservice/geocoding.dart' as gmaps;
 import '../service/notification_service.dart';
-
+import 'dart:io' show File;
+import 'package:file_picker/file_picker.dart';
+import 'package:flutter/foundation.dart' show kIsWeb;
 class IncidentReportFormPage extends StatefulWidget {
   const IncidentReportFormPage({Key? key}) : super(key: key);
 
@@ -230,47 +232,117 @@ void _nextStep() {
     }
   }
   
-  // Location permission handling
-  Future<bool> _handleLocationPermission() async {
-    bool serviceEnabled;
-    LocationPermission permission;
-
-    // Test if location services are enabled
+Future<bool> _handleLocationPermission() async {
+  // Check if location services are enabled
+  bool serviceEnabled = await Geolocator.isLocationServiceEnabled();
+  if (!serviceEnabled) {
+    // Show dialog to enable location services
+    bool? enabled = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Location Services Disabled'),
+        content: Text(
+          Platform.isAndroid
+              ? 'Please enable location services in Settings > Location'
+              : 'Enable location in Settings > Privacy > Location Services',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Cancel'),
+          ),
+          TextButton(
+            onPressed: () {
+              Geolocator.openLocationSettings();
+              Navigator.pop(context, true);
+            },
+            child: const Text('Open Settings'),
+          ),
+        ],
+      ),
+    );
+    if (enabled != true) return false;
     serviceEnabled = await Geolocator.isLocationServiceEnabled();
-    if (!serviceEnabled) {
-      // Location services are disabled, show dialog to enable
-      await _showLocationServiceDialog();
-      // Check again after user interaction
-      serviceEnabled = await Geolocator.isLocationServiceEnabled();
-      if (!serviceEnabled) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Location services are disabled. Please enable location to continue.')),
-        );
-        return false;
-      }
-    }
+    if (!serviceEnabled) return false;
+  }
 
-    // Check location permission
-    permission = await Geolocator.checkPermission();
+  // Check and request permissions
+  LocationPermission permission = await Geolocator.checkPermission();
+  if (permission == LocationPermission.denied) {
+    permission = await Geolocator.requestPermission();
     if (permission == LocationPermission.denied) {
-      permission = await Geolocator.requestPermission();
-      if (permission == LocationPermission.denied) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Location permissions are denied')),
-        );
-        return false;
-      }
-    }
-
-    if (permission == LocationPermission.deniedForever) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Location permissions are permanently denied, please enable them in settings')),
+        const SnackBar(content: Text('Location permissions are required')),
       );
       return false;
     }
-
-    return true;
   }
+
+  if (permission == LocationPermission.deniedForever) {
+    // Direct user to app settings
+    await showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Permission Required'),
+        content: const Text(
+          'Location permissions are permanently denied. Please enable them in app settings.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Cancel'),
+          ),
+          TextButton(
+            onPressed: () {
+              Geolocator.openAppSettings();
+              Navigator.pop(context);
+            },
+            child: const Text('Open Settings'),
+          ),
+        ],
+      ),
+    );
+    return false;
+  }
+
+  return true;
+}
+
+
+
+Future<void> _showLocationServiceDialog() async {
+  String instructions;
+  if (Platform.isAndroid) {
+    instructions = 'Go to Settings > Location and enable for this app';
+  } else if (Platform.isIOS) {
+    instructions = 'Enable in Settings > Privacy > Location Services';
+  } else {
+    instructions = 'Enable location services on your device';
+  }
+
+  await showDialog(
+    context: context,
+    barrierDismissible: false,
+    builder: (context) => AlertDialog(
+      title: const Text('Location Required'),
+      content: Text('To report incidents, please enable location services.\n$instructions'),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(context),
+          child: const Text('Cancel'),
+        ),
+        TextButton(
+          onPressed: () {
+            Geolocator.openLocationSettings();
+            Navigator.pop(context);
+          },
+          child: const Text('Open Settings'),
+        ),
+      ],
+    ),
+  );
+}
+
 Future<void> _fetchPoliceStations(String districtName) async {
   setState(() => _isLoadingStations = true);
   
@@ -360,41 +432,7 @@ double _calculateDistance(double lat1, double lon1, double lat2, double lon2) {
 double _toRadians(double degree) {
   return degree * pi / 180;
 }
-  // Show dialog to prompt user to enable location services
-  Future<void> _showLocationServiceDialog() async {
-    return showDialog<void>(
-      context: context,
-      barrierDismissible: false,
-      builder: (BuildContext context) {
-        return AlertDialog(
-          title: const Text('Location Services Disabled'),
-          content: const SingleChildScrollView(
-            child: ListBody(
-              children: <Widget>[
-                Text('To submit your incident report, we need your location.'),
-                Text('Please enable location services to continue.'),
-              ],
-            ),
-          ),
-          actions: <Widget>[
-            TextButton(
-              child: const Text('Cancel'),
-              onPressed: () {
-                Navigator.of(context).pop();
-              },
-            ),
-            TextButton(
-              child: const Text('Open Settings'),
-              onPressed: () {
-                Navigator.of(context).pop();
-                Geolocator.openLocationSettings();
-              },
-            ),
-          ],
-        );
-      },
-    );
-  }
+
 
 // Future<void> _getCurrentLocation() async {
 //   setState(() => _isCapturingLocation = true);
@@ -426,50 +464,42 @@ double _toRadians(double degree) {
 //     setState(() => _isCapturingLocation = false);
 //   }
 // }
-// Update this method in the _IncidentReportFormPageState class
 Future<void> _getCurrentLocation() async {
-  // Check location permissions first
-  bool hasPermission = await _handleLocationPermission();
-  if (!hasPermission) {
-    // If no permission, exit early
-    return;
-  }
-  
+  if (!await _handleLocationPermission()) return;
+
   setState(() => _isCapturingLocation = true);
   
   try {
-    // Make sure to use a reasonable timeout
+    // Get position with timeout
     Position position = await Geolocator.getCurrentPosition(
       desiredAccuracy: LocationAccuracy.best,
-      timeLimit: const Duration(seconds: 10)
-    );
-    
+    ).timeout(const Duration(seconds: 15));
+
     setState(() {
       _currentPosition = position;
       _latitude = position.latitude;
       _longitude = position.longitude;
     });
 
-    // Try to get the address from Google Maps
-    bool addressResolved = await _getAddressFromGoogleMaps();
+    // Try Google Maps first
+    bool success = await _getAddressFromGoogleMaps();
     
-    // Check if we got an address AND if it's not incorrectly showing Kampala
-    // This handles the case where GPS is wrong indoors
-    if (!addressResolved || _isLikelyIncorrectKampalaResult()) {
+    // Fallback to device geocoding if needed
+    if (!success || _locationAddress.contains('Unknown')) {
+      await _getAddressFromDevice();
+    }
+
+    // Final fallback to Kabale if still unresolved
+    if (_detectedDistrict == null || _detectedDistrict!.contains('Unknown')) {
       _forceKabaleLocationIfNeeded();
     }
-    
-    // After location is set, fetch police stations for the district
+
+    // Fetch police stations
     if (_detectedDistrict != null) {
       await _fetchPoliceStations(_detectedDistrict!);
     }
-    
   } catch (e) {
-    print('Location error: $e');
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text('Error capturing location: ${e.toString()}')),
-    );
-    // Fallback to Kabale if configured
+    debugPrint('Location error: $e');
     _forceKabaleLocationIfNeeded();
   } finally {
     setState(() => _isCapturingLocation = false);
@@ -477,8 +507,34 @@ Future<void> _getCurrentLocation() async {
 }
 
 
+Future<bool> _getAddressFromDevice() async {
+  try {
+    List<Placemark> placemarks = await placemarkFromCoordinates(
+      _latitude!, _longitude!,
+    );
 
-
+    if (placemarks.isNotEmpty) {
+      final place = placemarks.first;
+      setState(() {
+        _locationAddress = [
+          place.street,
+          place.locality,
+          place.administrativeArea,
+          place.country
+        ].where((part) => part?.isNotEmpty ?? false).join(', ');
+        
+        _detectedDistrict = place.administrativeArea ?? 'Unknown District';
+        _detectedRegion = place.country == 'Uganda' 
+            ? UgandaRegionsMapper.getRegionForDistrict(_detectedDistrict!)
+            : 'Unknown Region';
+      });
+      return true;
+    }
+  } catch (e) {
+    debugPrint('Device geocoding error: $e');
+  }
+  return false;
+}
 
 void _applyUgandaSpecificMapping() {
   if (_latitude == null || _longitude == null) return;
@@ -736,78 +792,48 @@ bool _isCoordinateInUganda(double lat, double lon) {
   final String _incidentsEndpoint = 'https://hkggxkyzyjptapnqbdlc.supabase.co/rest/v1/incidents';
   final String _authToken = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImhrZ2d4a3l6eWpwdGFwbnFiZGxjIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NDE1OTgyNTksImV4cCI6MjA1NzE3NDI1OX0.RSq8Fl40y1PRTl_77UbJWwqbdMIY9mWE7YTH4a-1NsQ';
 
-  // File upload methods
-  Future<void> _pickFiles() async {
-    try {
-      setState(() {
-        _isUploading = true;
-      });
+Future<void> _pickFiles() async {
+  try {
+    setState(() => _isUploading = true);
+    
+    FilePickerResult? result = await FilePicker.platform.pickFiles(
+      type: FileType.custom,
+      allowedExtensions: _allowedExtensions,
+      allowMultiple: true,
+      withData: kIsWeb, // Only needed for web
+    );
 
-      FilePickerResult? result = await FilePicker.platform.pickFiles(
-        type: FileType.custom,
-        allowedExtensions: _allowedExtensions,
-        allowMultiple: true,
-      );
+    if (result != null) {
+      // Validate file count
+      if (_uploadedFiles.length + result.files.length > _maxFiles) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Max $_maxFiles files allowed')),
+        );
+        return;
+      }
 
-      if (result != null) {
-        // Check if adding these files would exceed the limit
-        if (_uploadedFiles.length + result.files.length > _maxFiles) {
+      // Validate file sizes
+      List<PlatformFile> validFiles = [];
+      for (var file in result.files) {
+        if (file.size <= _maxFileSizeInMB * 1024 * 1024) {
+          validFiles.add(file);
+        } else {
           ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-              content: Text('You can upload a maximum of $_maxFiles files'),
-              backgroundColor: Colors.red,
-            ),
-          );
-          setState(() {
-            _isUploading = false;
-          });
-          return;
-        }
-
-        // Filter out files that exceed the size limit
-        List<PlatformFile> validFiles = [];
-        List<String> oversizedFiles = [];
-
-        for (var file in result.files) {
-          // Check file size (convert bytes to MB)
-          double fileSizeInMB = file.size / (1024 * 1024);
-          
-          if (fileSizeInMB <= _maxFileSizeInMB) {
-            validFiles.add(file);
-          } else {
-            oversizedFiles.add(file.name);
-          }
-        }
-
-        // Add valid files to the list
-        setState(() {
-          _uploadedFiles.addAll(validFiles);
-        });
-
-        // Show warning for oversized files
-        if (oversizedFiles.isNotEmpty) {
-          String fileNames = oversizedFiles.join(', ');
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-              content: Text('Some files exceed the $_maxFileSizeInMB MB limit: $fileNames'),
-              backgroundColor: Colors.orange,
-            ),
+            SnackBar(content: Text('${file.name} exceeds size limit')),
           );
         }
       }
-    } catch (e) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('Error selecting files: $e'),
-          backgroundColor: Colors.red,
-        ),
-      );
-    } finally {
-      setState(() {
-        _isUploading = false;
-      });
+
+      setState(() => _uploadedFiles.addAll(validFiles));
     }
+  } catch (e) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text('Error: ${e.toString()}')),
+    );
+  } finally {
+    setState(() => _isUploading = false);
   }
+}
 
   // Determine the file type icon
   IconData _getFileTypeIcon(String fileName) {
@@ -855,29 +881,33 @@ bool _isCoordinateInUganda(double lat, double lon) {
 Future<String> _uploadFile(PlatformFile file) async {
   try {
     final supabase = Supabase.instance.client;
-    final filePath = 'incident-files/${DateTime.now().millisecondsSinceEpoch}_${file.name}';
+    final timestamp = DateTime.now().millisecondsSinceEpoch;
+    final filePath = 'incident-files/${timestamp}_${file.name}';
     
-    // Use file.bytes directly instead of reading from path
-    final bytes = file.bytes;
-    if (bytes == null) {
-      throw Exception('File bytes are null');
+    // Platform-specific file handling
+    late Uint8List fileBytes;
+    
+    if (kIsWeb) {
+      if (file.bytes == null) {
+        throw Exception('No file bytes available');
+      }
+      fileBytes = file.bytes!;
+    } else {
+      if (file.path == null) {
+        throw Exception('No file path available');
+      }
+      fileBytes = await File(file.path!).readAsBytes();
     }
-
-    await supabase.storage.from('incident-files').uploadBinary(
-      filePath,
-      bytes,
-      fileOptions: FileOptions(
-        contentType: _getContentType(file.name),
-        upsert: false,
-      )
-    );
-
-    final publicUrl = supabase.storage.from('incident-files').getPublicUrl(filePath);
-    print('File URL: $publicUrl');
-    return publicUrl;
+    
+    // Upload to Supabase
+    await supabase.storage
+        .from('incident-files')
+        .uploadBinary(filePath, fileBytes);
+    
+    return supabase.storage.from('incident-files').getPublicUrl(filePath);
   } catch (e) {
-    print('Error uploading file: $e');
-    throw Exception('Failed to upload file: ${file.name}. Error: $e');
+    debugPrint('Upload error: $e');
+    throw Exception('Failed to upload ${file.name}');
   }
 }
   

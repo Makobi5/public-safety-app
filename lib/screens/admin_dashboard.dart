@@ -16,6 +16,9 @@ import '../models/notification_model.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'dart:convert';
 import 'package:intl/intl.dart';
+import 'package:share_plus/share_plus.dart';
+import 'package:flutter_local_notifications/flutter_local_notifications.dart';
+import 'package:permission_handler/permission_handler.dart';
 
 
 class AdminDashboard extends StatefulWidget {
@@ -35,11 +38,13 @@ class _AdminDashboardState extends State<AdminDashboard> {
   final _firstNameController = TextEditingController();
   final _lastNameController = TextEditingController();
   final _searchController = TextEditingController();
+final FlutterLocalNotificationsPlugin flutterLocalNotificationsPlugin = FlutterLocalNotificationsPlugin();
   // Add this field in your _AdminDashboardState class
   bool _isCentralAdmin = false;
   String? _currentUserStationId;
   String? _currentPoliceStationName;
 final NotificationService _notificationService = NotificationService();
+
   
   bool _isLoading = false;
   String? _successMessage;
@@ -73,6 +78,7 @@ DateTime? lastFetchTime;
 @override
 void initState() {
   super.initState();
+  _initializeNotifications();
   
   // Get current user first, then initialize other components
   _getCurrentUser().then((_) {
@@ -100,6 +106,140 @@ void initState() {
     _setupNotificationListener();
   });
 }
+
+Future<void> _initializeNotifications() async {
+  try {
+    // Android initialization
+    const AndroidInitializationSettings initializationSettingsAndroid =
+        AndroidInitializationSettings('@mipmap/ic_launcher');
+    
+    // iOS initialization with a simpler approach
+    final IOSInitializationSettings initializationSettingsIOS =
+        IOSInitializationSettings(
+      requestAlertPermission: true,
+      requestBadgePermission: true,
+      requestSoundPermission: true,
+      onDidReceiveLocalNotification: (id, title, body, payload) async {
+        if (payload != null && mounted) {
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            _handleNotificationPayload(payload);
+          });
+        }
+      },
+    );
+    
+    // macOS initialization (optional)
+    final MacOSInitializationSettings initializationSettingsMacOS =
+        MacOSInitializationSettings(
+      requestAlertPermission: true,
+      requestBadgePermission: true,
+      requestSoundPermission: true,
+    );
+    
+    // Combined settings
+    final InitializationSettings initializationSettings =
+        InitializationSettings(
+      android: initializationSettingsAndroid,
+      iOS: initializationSettingsIOS,
+      macOS: initializationSettingsMacOS,
+    );
+    
+    // Initialize with proper callback handling
+    await flutterLocalNotificationsPlugin.initialize(
+      initializationSettings,
+      onSelectNotification: (String? payload) {
+        if (payload != null && mounted) {
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            _handleNotificationPayload(payload);
+          });
+        }
+      },
+    );
+    
+    // Request permissions for each platform
+    if (Platform.isIOS) {
+      await flutterLocalNotificationsPlugin
+          .resolvePlatformSpecificImplementation<
+              IOSFlutterLocalNotificationsPlugin>()
+          ?.requestPermissions(
+            alert: true,
+            badge: true,
+            sound: true,
+          );
+    } else if (Platform.isMacOS) {
+      await flutterLocalNotificationsPlugin
+          .resolvePlatformSpecificImplementation<
+              MacOSFlutterLocalNotificationsPlugin>()
+          ?.requestPermissions(
+            alert: true,
+            badge: true,
+            sound: true,
+          );
+    } else if (Platform.isAndroid) {
+      // Android 13+ permission handling
+      if (await Permission.notification.isDenied) {
+        await Permission.notification.request();
+      }
+    }
+  } catch (e) {
+    debugPrint('Notification initialization error: $e');
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Failed to initialize notifications'),
+          backgroundColor: Colors.red,
+        ),
+      );
+    }
+  }
+}
+
+Future<void> _handleNotificationPayload(String payload) async {
+  if (!mounted) return;
+
+  try {
+    final data = jsonDecode(payload) as Map<String, dynamic>;
+    final incidentId = data['incidentId']?.toString();
+
+    if (incidentId == null || incidentId.isEmpty) {
+      debugPrint('Invalid incident ID in payload');
+      return;
+    }
+
+    // Delay slightly to ensure navigation context is ready
+    await Future.delayed(const Duration(milliseconds: 300));
+
+    if (!mounted) return;
+
+    await Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (context) => CaseDetailScreen(
+          incidentId: incidentId,
+        ),
+      ),
+    );
+
+    // Refresh data when returning from detail screen
+    if (mounted) {
+      _markIncidentAsRead(incidentId);
+      _fetchDashboardData();
+    }
+  } catch (e) {
+    debugPrint('Error handling notification payload: $e');
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Failed to open incident details'),
+          backgroundColor: Colors.red,
+        ),
+      );
+    }
+  }
+}
+
+
+
+
 Future<void> _getCurrentUser() async {
   try {
     final supabase = Supabase.instance.client;
@@ -209,135 +349,112 @@ Future<void> _fetchPoliceStations() async {
 
   
 // Show notifications dialog
-void _showNotificationsDialog() {
-  showDialog(
+void _showQuickAlertDialog() {
+  final messageController = TextEditingController();
+
+  showModalBottomSheet(
     context: context,
-    builder: (context) => AlertDialog(
-      title: Row(
+    isScrollControlled: true,
+    backgroundColor: Colors.transparent,
+    builder: (context) => Container(
+      decoration: const BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      padding: EdgeInsets.only(
+        bottom: MediaQuery.of(context).viewInsets.bottom,
+        left: 16,
+        right: 16,
+        top: 16,
+      ),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
         children: [
-          const Icon(Icons.notifications, color: Color(0xFF003366)),
-          const SizedBox(width: 8),
-          const Text('Notifications'),
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              const Text(
+                'Emergency Alert',
+                style: TextStyle(
+                  fontSize: 20,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+              IconButton(
+                icon: const Icon(Icons.close),
+                onPressed: () => Navigator.pop(context),
+              ),
+            ],
+          ),
+          const Divider(),
+          const SizedBox(height: 8),
+          const Text(
+            'Send emergency alert to all officers and nearby districts?',
+            textAlign: TextAlign.center,
+            style: TextStyle(fontSize: 16),
+          ),
+          const SizedBox(height: 16),
+          TextField(
+            controller: messageController,
+            maxLines: 3,
+            decoration: InputDecoration(
+              labelText: 'Alert Message (Optional)',
+              border: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(12),
+              ),
+              hintText: 'Describe the emergency situation...',
+            ),
+          ),
+          const SizedBox(height: 24),
+          SizedBox(
+            width: double.infinity,
+            child: ElevatedButton.icon(
+              onPressed: () async {
+                final message = messageController.text.trim();
+                Navigator.pop(context);
+                
+                try {
+                  // Implement your actual alert sending logic here
+                  final supabase = Supabase.instance.client;
+                  await supabase.from('emergency_alerts').insert({
+                    'message': message.isNotEmpty ? message : 'General emergency alert',
+                    'created_by': _currentUserName ?? 'Admin',
+                    'station_id': _currentUserStationId,
+                    'created_at': DateTime.now().toIso8601String(),
+                  });
+                  
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(
+                      content: Text('Emergency alert sent successfully!'),
+                      backgroundColor: Colors.green,
+                    ),
+                  );
+                } catch (e) {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    SnackBar(
+                      content: Text('Failed to send alert: ${e.toString()}'),
+                      backgroundColor: Colors.red,
+                    ),
+                  );
+                }
+              },
+              style: ElevatedButton.styleFrom(
+                backgroundColor: Colors.red,
+                padding: const EdgeInsets.symmetric(vertical: 16),
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(12),
+                ),
+              ),
+              icon: const Icon(Icons.warning_amber, color: Colors.white),
+              label: const Text(
+                'SEND EMERGENCY ALERT',
+                style: TextStyle(color: Colors.white),
+              ),
+            ),
+          ),
+          const SizedBox(height: 16),
         ],
       ),
-      content: SizedBox(
-        width: double.maxFinite,
-        child: notifications.isEmpty
-            ? const Center(
-                child: Padding(
-                  padding: EdgeInsets.all(20.0),
-                  child: Text('No notifications'),
-                ),
-              )
-            : ListView.builder(
-                shrinkWrap: true,
-                itemCount: notifications.length,
-                itemBuilder: (context, index) {
-                  final notification = notifications[index];
-                  return ListTile(
-                    leading: CircleAvatar(
-                      backgroundColor: notification['read'] == true
-                          ? Colors.grey.shade200
-                          : _getPriorityColor(notification['priority'] ?? 'Low'),
-                      child: Icon(
-                        Icons.notification_important,
-                        color: notification['read'] == true
-                            ? Colors.grey
-                            : _getPriorityTextColor(notification['priority'] ?? 'Low'),
-                      ),
-                    ),
-                    title: Text(
-                      notification['title'],
-                      style: TextStyle(
-                        fontWeight: notification['read'] == true ? FontWeight.normal : FontWeight.bold,
-                      ),
-                    ),
-                    subtitle: Text(notification['message']),
-                    trailing: Text(notification['time']),
-                    onTap: () async {
-                      // Mark notification as read locally
-                      setState(() {
-                        notifications[index]['read'] = true;
-                        unreadNotifications = notifications.where((n) => n['read'] == false).length;
-                      });
-                      
-                      // Save the updated notification state
-                      await _saveNotificationsState();
-                      
-                      // Close the dialog
-                      Navigator.of(context).pop();
-                      
-                      // Navigate to the case detail
-                      Navigator.push(
-                        context,
-                        MaterialPageRoute(
-                          builder: (context) => CaseDetailScreen(
-                            incidentId: notification['id'],
-                          ),
-                        ),
-                      ).then((_) {
-                        // Just refresh dashboard data when returning, don't reprocess notifications
-                        _fetchDashboardData();
-                        
-                        // Make sure to mark this notification as read again in case of a state reset
-                        setState(() {
-                          final index = notifications.indexWhere((n) => n['id'] == notification['id']);
-                          if (index >= 0) {
-                            notifications[index]['read'] = true;
-                            unreadNotifications = notifications.where((n) => n['read'] == false).length;
-                          }
-                        });
-                        _saveNotificationsState();
-                      });
-                    },
-                  );
-                },
-              ),
-      ),
-      actions: [
-        TextButton(
-          onPressed: () async {
-            // Mark all as read locally
-            setState(() {
-              for (var i = 0; i < notifications.length; i++) {
-                notifications[i]['read'] = true;
-              }
-              unreadNotifications = 0;
-            });
-            
-            // Save the updated notification state
-            await _saveNotificationsState();
-            
-            // Mark all as read in the database
-            try {
-              final supabase = Supabase.instance.client;
-              final user = supabase.auth.currentUser;
-              
-              if (user != null) {
-                // Update all notifications for this user to mark them as read
-                await supabase
-                    .from('notifications')
-                    .update({'is_read': true})
-                    .eq('user_id', user.id);
-              }
-            } catch (e) {
-              print('Error marking all notifications as read: $e');
-            }
-            
-            Navigator.of(context).pop();
-          },
-          child: const Text('Mark All Read'),
-        ),
-        ElevatedButton(
-          onPressed: () {
-            Navigator.of(context).pop();
-          },
-          style: ElevatedButton.styleFrom(
-            backgroundColor: const Color(0xFF003366),
-          ),
-          child: const Text('Close'),
-        ),
-      ],
     ),
   );
 }
@@ -475,109 +592,112 @@ Future<void> _saveProcessedIncidents() async {
   }
 }
 Widget _buildReportItem(Map<String, dynamic> report) {
-  // Check if this report has been processed (viewed)
   final bool isUnread = !processedIncidents.containsKey(report['id'].toString());
-  
-  return InkWell(
-    onTap: () {
-      // Navigate to case detail screen
-      Navigator.push(
-        context,
-        MaterialPageRoute(
-          builder: (context) => CaseDetailScreen(
-            incidentId: report['id'],
-          ),
-        ),
-      ).then((_) {
-        // Mark as processed when returning from detail screen
-        if (mounted) {
+  final priority = report['priority'] ?? 'Low';
+  final priorityColor = _getPriorityColor(priority);
+  final textColor = _getPriorityTextColor(priority);
+
+  return Card(
+    margin: const EdgeInsets.only(bottom: 12),
+    shape: RoundedRectangleBorder(
+      borderRadius: BorderRadius.circular(12),
+    ),
+    elevation: 0,
+    child: InkWell(
+      borderRadius: BorderRadius.circular(12),
+      onTap: () async {
+        // Mark as read immediately for better UX
+        if (isUnread) {
           setState(() {
             processedIncidents[report['id'].toString()] = true;
           });
-          // Save changes to processed incidents
-          _saveProcessedIncidents();
-          // Refresh dashboard data
-          _fetchDashboardData();
-          
-          // Also update notification state if present
-          final notificationIndex = notifications.indexWhere((n) => n['id'] == report['id']);
-          if (notificationIndex >= 0) {
-            setState(() {
-              notifications[notificationIndex]['read'] = true;
-              unreadNotifications = notifications.where((n) => n['read'] == false).length;
-            });
-            _saveNotificationsState();
-          }
+          await _saveProcessedIncidents();
         }
-      });
-    },
-    child: Container(
-      margin: const EdgeInsets.only(bottom: 12),
-      padding: const EdgeInsets.all(12),
-      decoration: BoxDecoration(
-        color: isUnread ? Colors.blue.shade50 : Colors.grey.shade50,
-        borderRadius: BorderRadius.circular(8),
-        border: Border.all(color: isUnread ? Colors.blue.shade200 : Colors.grey.shade200),
-      ),
-      child: Row(
-        children: [
-          // Unread indicator dot
-          if (isUnread)
-            Container(
-              width: 8,
-              height: 8,
-              margin: const EdgeInsets.only(right: 8),
-              decoration: BoxDecoration(
-                color: Colors.blue,
-                shape: BoxShape.circle,
-              ),
-            ),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  report['title'],
-                  style: TextStyle(
-                    fontWeight: isUnread ? FontWeight.bold : FontWeight.normal,
-                    fontSize: 16,
-                  ),
-                ),
-                const SizedBox(height: 4),
-                Text(
-                  '${report['district']}   ${report['time']}',
-                  style: TextStyle(
-                    color: Colors.grey.shade700,
-                    fontSize: 14,
-                  ),
-                ),
-              ],
+
+        // Navigate to case detail
+        await Navigator.push(
+          context,
+          MaterialPageRoute(
+            builder: (context) => CaseDetailScreen(
+              incidentId: report['id'],
             ),
           ),
-          Row(
-            children: [
+        );
+
+        // Refresh data when returning
+        _fetchDashboardData();
+        
+        // Update notification state if needed
+        final notificationIndex = notifications.indexWhere((n) => n['id'] == report['id']);
+        if (notificationIndex >= 0) {
+          setState(() {
+            notifications[notificationIndex]['read'] = true;
+            unreadNotifications = notifications.where((n) => n['read'] == false).length;
+          });
+          await _saveNotificationsState();
+        }
+      },
+      child: Container(
+        decoration: BoxDecoration(
+          border: Border(
+            left: BorderSide(
+              color: isUnread ? Colors.blue : Colors.transparent,
+              width: 4,
+            ),
+          ),
+        ),
+        padding: const EdgeInsets.all(12),
+        child: Row(
+          children: [
+            if (isUnread)
               Container(
-                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-                decoration: BoxDecoration(
-                  color: _getPriorityColor(report['priority']),
-                  borderRadius: BorderRadius.circular(20),
+                width: 8,
+                height: 8,
+                margin: const EdgeInsets.only(right: 12),
+                decoration: const BoxDecoration(
+                  color: Colors.blue,
+                  shape: BoxShape.circle,
                 ),
-                child: Text(
-                  '${report['priority']} Priority',
-                  style: TextStyle(
-                    color: _getPriorityTextColor(report['priority']),
-                    fontWeight: FontWeight.bold,
+              ),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    report['title'],
+                    style: TextStyle(
+                      fontWeight: isUnread ? FontWeight.bold : FontWeight.normal,
+                      fontSize: 16,
+                    ),
                   ),
+                  const SizedBox(height: 4),
+                  Text(
+                    '${report['district']} • ${report['time']}',
+                    style: TextStyle(
+                      color: Colors.grey.shade700,
+                      fontSize: 14,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+              decoration: BoxDecoration(
+                color: priorityColor,
+                borderRadius: BorderRadius.circular(20),
+              ),
+              child: Text(
+                '$priority Priority',
+                style: TextStyle(
+                  color: textColor,
+                  fontWeight: FontWeight.bold,
+                  fontSize: 12,
                 ),
               ),
-              const SizedBox(width: 8),
-              Icon(
-                Icons.chevron_right,
-                color: Colors.grey.shade400,
-              ),
-            ],
-          ),
-        ],
+            ),
+          ],
+        ),
       ),
     ),
   );
@@ -636,85 +756,149 @@ void _showNewIncidentNotification(Map<String, dynamic> incident) {
 
 
 void _processNewIncidents(List<Map<String, dynamic>> newIncidents) async {
-  if (newIncidents.isEmpty) return;
-  
-  bool shouldShowNotification = false;
-  Map<String, dynamic>? highestPriorityIncident;
+  if (newIncidents.isEmpty || !mounted) return;
 
-  setState(() {
+  try {
+    bool shouldShowNotification = false;
+    Map<String, dynamic>? highestPriorityIncident;
+    final now = DateTime.now();
+
+    // Process incidents in batches to avoid UI jank
     for (var incident in newIncidents) {
-      // Ensure the ID exists and convert to string
+      if (!mounted) return; // Check if widget is still in the tree
+
       final String reportId = incident['id']?.toString() ?? '';
       if (reportId.isEmpty) continue;
-      
-      // Skip if already processed
-      if (processedIncidents[reportId] == true) continue;
-      
-      // Important: Make sure we're using the correct column name from the database
-      // Check if this incident belongs to the admin's station
-      final String? incidentStationId = incident['police_station_id']?.toString();
-      
-      // For non-central admins, filter by station
+
+      // Skip if already processed (thread-safe check)
+      if (processedIncidents.containsKey(reportId)) continue;
+
+      // Station filtering logic
       if (!_isCentralAdmin && _currentUserStationId != null) {
-        // Skip if this incident is not for this admin's station
+        final incidentStationId = incident['police_station_id']?.toString();
         if (incidentStationId != _currentUserStationId) {
-          print('Skipping notification for incident $reportId - belongs to station $incidentStationId, not $_currentUserStationId');
+          debugPrint('Skipping incident $reportId - wrong station');
           continue;
         }
       }
+
+      // Process incident
+      final priority = _notificationService.getIncidentPriority(
+          incident['incident_type'] ?? '');
       
-      // Debugging
-      print('Processing notification for incident $reportId with station ID: $incidentStationId');
-      
-      // Mark as processed
-      processedIncidents[reportId] = true;
-      
-      // Determine priority
-      final String priority = _notificationService.getIncidentPriority(incident['incident_type'] ?? '');
-      
-      // Format time for display
-      final String timeString = incident['created_at'] != null 
+      final timeString = incident['created_at'] != null
           ? DateFormat('HH:mm').format(DateTime.parse(incident['created_at']))
-          : DateFormat('HH:mm').format(DateTime.now());
-      
-      // Track highest priority incident for toast notification
+          : DateFormat('HH:mm').format(now);
+
+      // Update state once per batch instead of per incident
+      setState(() {
+        processedIncidents[reportId] = true;
+        
+        notifications.insert(0, {
+          'id': reportId,
+          'title': '${priority == 'High' ? '⚠️ ' : ''}${incident['incident_type'] ?? 'Incident'}',
+          'message': '${incident['district'] ?? 'Unknown'} • Status: ${incident['status'] ?? 'Pending'}',
+          'time': timeString,
+          'read': false,
+          'priority': priority,
+        });
+
+        unreadNotifications++;
+      });
+
+      // Track highest priority incident
       if (highestPriorityIncident == null || 
-          _isHigherPriority(priority, highestPriorityIncident!['priority'] ?? 'Low')) {
+          _isHigherPriority(priority, highestPriorityIncident!['priority'])) {
         highestPriorityIncident = {
           ...incident,
           'priority': priority,
           'time': timeString
         };
+        shouldShowNotification = true;
       }
-      
-      // Add to notifications list
-      notifications.insert(0, {
-        'id': reportId,
-        'title': 'New ${priority == 'High' ? '⚠️ ' : ''}${incident['incident_type'] ?? 'Incident'}',
-        'message': 'Reported in ${incident['district'] ?? 'Unknown'}\nStatus: ${incident['status'] ?? 'Pending'}',
-        'time': timeString,
-        'read': false,
-        'priority': priority,
+    }
+
+    // Show mobile-optimized notification
+    if (shouldShowNotification && highestPriorityIncident != null && mounted) {
+      _showMobileNotification(highestPriorityIncident!);
+    }
+
+    // Throttle saves to prevent excessive I/O
+    await Future.wait([
+      _saveNotificationsState(),
+      _saveProcessedIncidents(),
+    ]);
+
+    // Debounce dashboard refresh
+    if (mounted) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) _fetchDashboardData();
       });
-      
-      // Increment unread count
-      unreadNotifications++;
-      
-      shouldShowNotification = true;
+    }
+
+  } catch (e) {
+    debugPrint('Error processing incidents: $e');
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Failed to update incidents'),
+          backgroundColor: Colors.red,
+        ),
+      );
+    }
+  }
+}
+
+// Mobile-optimized notification
+void _showMobileNotification(Map<String, dynamic> incident) {
+  final priorityColor = _getPriorityColor(incident['priority']);
+  
+  ScaffoldMessenger.of(context).showSnackBar(
+    SnackBar(
+      content: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            '${incident['incident_type']}',
+            style: TextStyle(
+              fontWeight: FontWeight.bold,
+              color: _getPriorityTextColor(incident['priority']),
+            ),
+          ),
+          Text(
+            '${incident['district']} • ${incident['time']}',
+            style: TextStyle(fontSize: 12),
+          ),
+        ],
+      ),
+      backgroundColor: priorityColor.withOpacity(0.9),
+      duration: Duration(seconds: 5),
+      behavior: SnackBarBehavior.floating,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(10),
+      ),
+      action: SnackBarAction(
+        label: 'VIEW',
+        textColor: Colors.white,
+        onPressed: () => _navigateToIncident(incident['id']),
+      ),
+    ),
+  );
+}
+
+void _navigateToIncident(String incidentId) {
+  Navigator.push(
+    context,
+    MaterialPageRoute(
+      builder: (context) => CaseDetailScreen(incidentId: incidentId),
+    ),
+  ).then((_) {
+    if (mounted) {
+      _markIncidentAsRead(incidentId);
+      _fetchDashboardData();
     }
   });
-
-  // Show toast notification for highest priority incident
-  if (shouldShowNotification && highestPriorityIncident != null && mounted) {
-    _showNewIncidentNotification(highestPriorityIncident!);
-  }
-  
-  // Save notifications state
-  await _saveNotificationsState();
-  await _saveProcessedIncidents();
-  
-  // Refresh dashboard data
-  _fetchDashboardData();
 }
 
 void _forceNotifyMostRecent() async {
@@ -1329,195 +1513,131 @@ Color _getPriorityTextColor(String priority) {
   }
 }
   
-  void _exportDistrictActivityMap() async {
-    try {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Generating district activity report...'),
-        ),
-      );
-      
-      // Create PDF document
-      final pdf = pw.Document();
-      
-      // Add content to PDF
-      pdf.addPage(
-        pw.Page(
-          pageFormat: PdfPageFormat.a4,
-          build: (pw.Context context) {
-            return pw.Column(
-              crossAxisAlignment: pw.CrossAxisAlignment.start,
-              children: [
-                pw.Text(
-                  'District Activity Report',
-                  style: pw.TextStyle(
-                    fontSize: 24,
-                    fontWeight: pw.FontWeight.bold,
-                  ),
-                ),
-                pw.SizedBox(height: 20),
-                pw.Text(
-                  'Generated on: ${DateTime.now().toString().substring(0, 16)}',
-                  style: const pw.TextStyle(
-                    fontSize: 12,
-                  ),
-                ),
-                pw.SizedBox(height: 20),
-                pw.Table(
-                  border: pw.TableBorder.all(),
-                  children: [
-                    pw.TableRow(
-                      children: [
-                        pw.Padding(
-                          padding: const pw.EdgeInsets.all(8),
-                          child: pw.Text(
-                            'District',
-                            style: pw.TextStyle(fontWeight: pw.FontWeight.bold),
-                          ),
-                        ),
-                        pw.Padding(
-                          padding: const pw.EdgeInsets.all(8),
-                          child: pw.Text(
-                            'Total Incidents',
-                            style: pw.TextStyle(fontWeight: pw.FontWeight.bold),
-                          ),
-                        ),
-                        pw.Padding(
-                          padding: const pw.EdgeInsets.all(8),
-                          child: pw.Text(
-                            'Critical Incidents',
-                            style: pw.TextStyle(fontWeight: pw.FontWeight.bold),
-                          ),
-                        ),
-                      ],
-                    ),
-                    // Sample data rows - in a real implementation, you would
-                    // populate this with data from your database
-                    ..._generateDistrictRows(),
-                  ],
-                ),
-              ],
-            );
-          },
-        ),
-      );
-      
-      // Save the PDF document
-      final tempDir = await getTemporaryDirectory();
-      final file = File('${tempDir.path}/district_activity_report.pdf');
-      await file.writeAsBytes(await pdf.save());
-      
-      // Share the PDF file
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('PDF saved to: ${file.path}'),
-          duration: const Duration(seconds: 5),
-          action: SnackBarAction(
-            label: 'OK',
-            onPressed: () {},
-          ),
-        ),
-      );
-      
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('District activity report exported successfully!'),
-          backgroundColor: Colors.green,
-        ),
-      );
-    } catch (e) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('Error exporting report: $e'),
-          backgroundColor: Colors.red,
-        ),
-      );
-    }
-  }
-  
-  List<pw.TableRow> _generateDistrictRows() {
-    // In a real implementation, you would aggregate incident data by district
-    // This is just sample data
-    final districts = [
-      {'name': 'Kabale', 'total': 12, 'critical': 4},
-      {'name': 'Kampala', 'total': 25, 'critical': 8},
-      {'name': 'Entebbe', 'total': 8, 'critical': 2},
-      {'name': 'Jinja', 'total': 15, 'critical': 5},
-      {'name': 'Mbarara', 'total': 10, 'critical': 3},
-    ];
-    
-    return districts.map((district) {
-      return pw.TableRow(
-        children: [
-          pw.Padding(
-            padding: const pw.EdgeInsets.all(8),
-            child: pw.Text(district['name'].toString()),
-          ),
-          pw.Padding(
-            padding: const pw.EdgeInsets.all(8),
-            child: pw.Text(district['total'].toString()),
-          ),
-          pw.Padding(
-            padding: const pw.EdgeInsets.all(8),
-            child: pw.Text(district['critical'].toString()),
-          ),
-        ],
-      );
-    }).toList();
-  }
+Future<void> _exportDistrictActivityMap() async {
+  try {
+    // Show loading indicator
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: Text('Generating district activity report...'),
+        duration: Duration(seconds: 2),
+      ),
+    );
 
-void _showQuickAlertDialog() {
-  showDialog(
-    context: context,
-    builder: (context) => AlertDialog(
-      title: Row(
-        children: [
-          Icon(Icons.warning_amber, color: Colors.red),
-          SizedBox(width: 8),
-          Text('Send Emergency Alert'),
-        ],
-      ),
-      content: Column(
-        mainAxisSize: MainAxisSize.min,
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text('Send an emergency alert to all officers and nearby districts?'),
-          SizedBox(height: 16),
-          TextField(
-            maxLines: 3,
-            decoration: InputDecoration(
-              labelText: 'Alert Message (Optional)',
-              border: OutlineInputBorder(),
-              hintText: 'Enter alert details...',
-            ),
-          ),
-        ],
-      ),
-      actions: [
-        TextButton(
-          onPressed: () => Navigator.of(context).pop(),
-          child: Text('Cancel'),
-        ),
-        ElevatedButton.icon(
-          onPressed: () {
-            Navigator.of(context).pop();
-            ScaffoldMessenger.of(context).showSnackBar(
-              SnackBar(
-                content: Text('Emergency alert sent to all active units!'),
-                backgroundColor: Colors.red,
+    // Create PDF document
+    final pdf = pw.Document();
+    
+    // Add content to PDF
+    pdf.addPage(
+      pw.Page(
+        pageFormat: PdfPageFormat.a4,
+        build: (pw.Context context) {
+          return pw.Column(
+            crossAxisAlignment: pw.CrossAxisAlignment.start,
+            children: [
+              pw.Text(
+                'District Activity Report',
+                style: pw.TextStyle(
+                  fontSize: 24,
+                  fontWeight: pw.FontWeight.bold,
+                ),
               ),
-            );
-          },
-          style: ElevatedButton.styleFrom(
-            backgroundColor: Colors.red,
-          ),
-          icon: Icon(Icons.send),
-          label: Text('Send Alert'),
-        ),
-      ],
+              pw.SizedBox(height: 20),
+              pw.Text(
+                'Generated on: ${DateFormat('yyyy-MM-dd HH:mm').format(DateTime.now())}',
+                style: const pw.TextStyle(fontSize: 12),
+              ),
+              pw.SizedBox(height: 20),
+              pw.Table(
+                border: pw.TableBorder.all(),
+                children: [
+                  pw.TableRow(
+                    children: [
+                      _buildPdfHeaderCell('District'),
+                      _buildPdfHeaderCell('Total Incidents'),
+                      _buildPdfHeaderCell('Critical Incidents'),
+                    ],
+                  ),
+                  ..._generateDistrictRows(),
+                ],
+              ),
+            ],
+          );
+        },
+      ),
+    );
+
+    // Get temporary directory
+    final directory = await getTemporaryDirectory();
+    final file = File('${directory.path}/district_activity_report_${DateTime.now().millisecondsSinceEpoch}.pdf');
+    
+    // Save the PDF
+    await file.writeAsBytes(await pdf.save());
+
+    // Share the file using mobile share sheet
+    await Share.shareXFiles(
+      [XFile(file.path)],
+      text: 'District Activity Report - ${DateFormat('yyyy-MM-dd').format(DateTime.now())}',
+      subject: 'Public Safety Report',
+    );
+
+  } catch (e) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text('Failed to export report: ${e.toString()}'),
+        backgroundColor: Colors.red,
+        duration: const Duration(seconds: 3),
+      ),
+    );
+  }
+}
+
+pw.Padding _buildPdfHeaderCell(String text) {
+  return pw.Padding(
+    padding: const pw.EdgeInsets.all(8),
+    child: pw.Text(
+      text,
+      style: pw.TextStyle(fontWeight: pw.FontWeight.bold),
     ),
   );
 }
+
+List<pw.TableRow> _generateDistrictRows() {
+  // This should be replaced with actual data from your database
+  final districtData = recentReports.fold<Map<String, Map<String, int>>>(
+    {},
+    (map, report) {
+      final district = report['district'] ?? 'Unknown';
+      map.putIfAbsent(district, () => {'total': 0, 'critical': 0});
+      map[district]!['total'] = map[district]!['total']! + 1;
+      if ((report['priority'] ?? 'Low').toString().toLowerCase() == 'high') {
+        map[district]!['critical'] = map[district]!['critical']! + 1;
+      }
+      return map;
+    },
+  );
+
+  return districtData.entries.map((entry) {
+    return pw.TableRow(
+      children: [
+        pw.Padding(
+          padding: const pw.EdgeInsets.all(8),
+          child: pw.Text(entry.key),
+        ),
+        pw.Padding(
+          padding: const pw.EdgeInsets.all(8),
+          child: pw.Text(entry.value['total'].toString()),
+        ),
+        pw.Padding(
+          padding: const pw.EdgeInsets.all(8),
+          child: pw.Text(entry.value['critical'].toString()),
+        ),
+      ],
+    );
+  }).toList();
+}
+  
+
+
 
 // Code to implement notification badge in AppBar
 
@@ -1556,7 +1676,7 @@ Widget build(BuildContext context) {
             IconButton(
               icon: const Icon(Icons.notifications_none, color: Colors.white),
               onPressed: () {
-                _showNotificationsDialog();
+                _showQuickAlertDialog();
               },
             ),
             if (unreadNotifications > 0)
@@ -2437,292 +2557,263 @@ Widget _buildDashboard() {
   );
 }
 Widget _buildAddAdminForm() {
-  return SafeArea(
-    child: SingleChildScrollView(
-      child: Padding(
-        padding: const EdgeInsets.all(24.0),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            const Text(
-              'Admin Management',
-              style: TextStyle(
-                fontSize: 24,
-                fontWeight: FontWeight.bold,
-                color: Color(0xFF003366),
-              ),
+  return GestureDetector(
+    onTap: () => FocusScope.of(context).unfocus(),
+    child: Scaffold(
+      appBar: AppBar(
+        title: const Text('Add Admin Account'),
+        leading: IconButton(
+          icon: const Icon(Icons.arrow_back),
+          onPressed: () {
+            setState(() {
+              _showAddAdminForm = false;
+            });
+          },
+        ),
+      ),
+      body: SafeArea(
+        child: SingleChildScrollView(
+          padding: const EdgeInsets.all(16),
+          child: Form(
+            key: _formKey,
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                if (_successMessage != null)
+                  _buildSuccessMessage(),
+                if (_errorMessage != null)
+                  _buildErrorMessage(),
+                const SizedBox(height: 16),
+                _buildFormFields(),
+                const SizedBox(height: 24),
+                _buildSubmitButton(),
+              ],
             ),
-            const SizedBox(height: 24),
-            
-            // Add Admin Form
-            Card(
-              elevation: 4,
-              shape: RoundedRectangleBorder(
-                borderRadius: BorderRadius.circular(12),
-              ),
-              child: Padding(
-                padding: const EdgeInsets.all(16.0),
-                child: Form(
-                  key: _formKey,
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      const Text(
-                        'Create New Admin Account',
-                        style: TextStyle(
-                          fontSize: 18,
-                          fontWeight: FontWeight.bold,
-                          color: Color(0xFF003366),
-                        ),
-                      ),
-                      const SizedBox(height: 16),
-                      
-                    // Success message with improved styling
-                    if (_successMessage != null)
-                      Container(
-                        width: double.infinity,
-                        padding: const EdgeInsets.all(16),
-                        margin: const EdgeInsets.only(bottom: 20),
-                        decoration: BoxDecoration(
-                          color: Colors.green.shade50,
-                          borderRadius: BorderRadius.circular(10),
-                          border: Border.all(color: Colors.green.shade300),
-                          boxShadow: [
-                            BoxShadow(
-                              color: Colors.green.shade100,
-                              blurRadius: 4,
-                              offset: const Offset(0, 2),
-                            ),
-                          ],
-                        ),
-                        child: Row(
-                          children: [
-                            Icon(
-                              Icons.check_circle,
-                              color: Colors.green.shade600,
-                              size: 28,
-                            ),
-                            const SizedBox(width: 12),
-                            Expanded(
-                              child: Column(
-                                crossAxisAlignment: CrossAxisAlignment.start,
-                                children: [
-                                  Text(
-                                    'Success!',
-                                    style: TextStyle(
-                                      color: Colors.green.shade800,
-                                      fontWeight: FontWeight.bold,
-                                      fontSize: 16,
-                                    ),
-                                  ),
-                                  const SizedBox(height: 4),
-                                  Text(
-                                    _successMessage!,
-                                    style: TextStyle(
-                                      color: Colors.green.shade700,
-                                    ),
-                                  ),
-                                ],
-                              ),
-                            ),
-                          ],
-                        ),
-                      ),
-                      
-                      // Error message
-                      if (_errorMessage != null)
-                        Container(
-                          width: double.infinity,
-                          padding: const EdgeInsets.all(12),
-                          margin: const EdgeInsets.only(bottom: 16),
-                          decoration: BoxDecoration(
-                            color: Colors.red.shade100,
-                            borderRadius: BorderRadius.circular(8),
-                            border: Border.all(color: Colors.red.shade300),
-                          ),
-                          child: Text(
-                            _errorMessage!,
-                            style: TextStyle(color: Colors.red.shade800),
-                          ),
-                        ),
-                      
-                      // First Name
-                      TextFormField(
-                        controller: _firstNameController,
-                        decoration: const InputDecoration(
-                          labelText: 'First Name',
-                          border: OutlineInputBorder(),
-                        ),
-                        validator: (value) {
-                          if (value == null || value.isEmpty) {
-                            return 'Please enter first name';
-                          }
-                          return null;
-                        },
-                      ),
-                      const SizedBox(height: 16),
-                      
-                      // Last Name
-                      TextFormField(
-                        controller: _lastNameController,
-                        decoration: const InputDecoration(
-                          labelText: 'Last Name',
-                          border: OutlineInputBorder(),
-                        ),
-                        validator: (value) {
-                          if (value == null || value.isEmpty) {
-                            return 'Please enter last name';
-                          }
-                          return null;
-                        },
-                      ),
-                      const SizedBox(height: 16),
-                      
-                      // Email
-                      TextFormField(
-                        controller: _emailController,
-                        decoration: const InputDecoration(
-                          labelText: 'Email',
-                          border: OutlineInputBorder(),
-                        ),
-                        validator: (value) {
-                          if (value == null || value.isEmpty) {
-                            return 'Please enter email';
-                          }
-                          if (!value.contains('@') || !value.contains('.')) {
-                            return 'Please enter a valid email';
-                          }
-                          return null;
-                        },
-                      ),
-                      const SizedBox(height: 16),
-                      
-                      // Password
-                      TextFormField(
-                        controller: _passwordController,
-                        obscureText: true,
-                        decoration: const InputDecoration(
-                          labelText: 'Password',
-                          border: OutlineInputBorder(),
-                        ),
-                        validator: (value) {
-                          if (value == null || value.isEmpty) {
-                            return 'Please enter password';
-                          }
-                          if (value.length < 8) {
-                            return 'Password must be at least 8 characters';
-                          }
-                          return null;
-                        },
-                      ),
-                      const SizedBox(height: 16),
-                      
-                      // Police Station Selection
-                      DropdownButtonFormField<String>(
-                        value: _selectedStationId,
-                        decoration: const InputDecoration(
-                          labelText: 'Assign to Police Station',
-                          border: OutlineInputBorder(),
-                          prefixIcon: Icon(Icons.location_on),
-                        ),
-                        hint: const Text('Select Police Station'),
-                        items: _policeStations.map<DropdownMenuItem<String>>((station) {
-                          return DropdownMenuItem<String>(
-                            value: station['id'],
-                            child: Text(station['name']),
-                          );
-                        }).toList(),
-                        onChanged: (value) {
-                          setState(() {
-                            _selectedStationId = value;
-                          });
-                        },
-                        validator: (value) {
-                          if (value == null || value.isEmpty) {
-                            return 'Please select a police station';
-                          }
-                          return null;
-                        },
-                      ),
-                      
-                      // Display a note for central admins about station assignment
-                      if (_isCentralAdmin) 
-                        Padding(
-                          padding: const EdgeInsets.only(top: 8.0),
-                          child: Text(
-                            'As a Central Admin, you can assign to any police station',
-                            style: TextStyle(
-                              color: Colors.blue.shade700,
-                              fontSize: 12,
-                              fontStyle: FontStyle.italic,
-                            ),
-                          ),
-                        ),
-                        
-                      // Display a note for regular admins about station assignment
-                      if (!_isCentralAdmin && _currentPoliceStationName != null) 
-                        Padding(
-                          padding: const EdgeInsets.only(top: 8.0),
-                          child: Text(
-                            'You can only assign admins to $_currentPoliceStationName',
-                            style: TextStyle(
-                              color: Colors.orange.shade700,
-                              fontSize: 12,
-                              fontStyle: FontStyle.italic,
-                            ),
-                          ),
-                        ),
-                      
-                      const SizedBox(height: 24),
-                      
-                      // Buttons
-                      Row(
-                        children: [
-                          Expanded(
-                            child: OutlinedButton(
-                              onPressed: () {
-                                setState(() {
-                                  _showAddAdminForm = false;
-                                });
-                              },
-                              style: OutlinedButton.styleFrom(
-                                padding: const EdgeInsets.symmetric(vertical: 12),
-                                shape: RoundedRectangleBorder(
-                                  borderRadius: BorderRadius.circular(8),
-                                ),
-                              ),
-                              child: const Text('Cancel'),
-                            ),
-                          ),
-                          const SizedBox(width: 16),
-                          Expanded(
-                            child: ElevatedButton(
-                              onPressed: _isLoading ? null : _addAdmin,
-                              style: ElevatedButton.styleFrom(
-                                backgroundColor: const Color(0xFF003366),
-                                padding: const EdgeInsets.symmetric(vertical: 12),
-                                shape: RoundedRectangleBorder(
-                                  borderRadius: BorderRadius.circular(8),
-                                ),
-                              ),
-                              child: _isLoading
-                                  ? const CircularProgressIndicator(color: Colors.white)
-                                  : const Text(
-                                      'Create Admin Account',
-                                      style: TextStyle(fontSize: 16),
-                                    ),
-                            ),
-                          ),
-                        ],
-                      ),
-                    ],
-                  ),
-                ),
-              ),
-            ),
-          ],
+          ),
         ),
       ),
     ),
   );
-}}
+}
+
+Widget _buildSuccessMessage() {
+  return Container(
+    width: double.infinity,
+    padding: const EdgeInsets.all(16),
+    margin: const EdgeInsets.only(bottom: 16),
+    decoration: BoxDecoration(
+      color: Colors.green.shade50,
+      borderRadius: BorderRadius.circular(12),
+      border: Border.all(color: Colors.green.shade300),
+    ),
+    child: Row(
+      children: [
+        Icon(Icons.check_circle, color: Colors.green.shade600),
+        const SizedBox(width: 12),
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                'Success!',
+                style: TextStyle(
+                  color: Colors.green.shade800,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+              Text(
+                _successMessage!,
+                style: TextStyle(color: Colors.green.shade700),
+              ),
+            ],
+          ),
+        ),
+      ],
+    ),
+  );
+}
+
+Widget _buildErrorMessage() {
+  return Container(
+    width: double.infinity,
+    padding: const EdgeInsets.all(16),
+    margin: const EdgeInsets.only(bottom: 16),
+    decoration: BoxDecoration(
+      color: Colors.red.shade50,
+      borderRadius: BorderRadius.circular(12),
+      border: Border.all(color: Colors.red.shade300),
+    ),
+    child: Row(
+      children: [
+        Icon(Icons.error_outline, color: Colors.red.shade600),
+        const SizedBox(width: 12),
+        Expanded(
+          child: Text(
+            _errorMessage!,
+            style: TextStyle(color: Colors.red.shade800),
+          ),
+        ),
+      ],
+    ),
+  );
+}
+
+Widget _buildFormFields() {
+  return Column(
+    children: [
+      TextFormField(
+        controller: _firstNameController,
+        decoration: const InputDecoration(
+          labelText: 'First Name',
+          border: OutlineInputBorder(),
+          prefixIcon: Icon(Icons.person),
+        ),
+        textInputAction: TextInputAction.next,
+        validator: (value) {
+          if (value == null || value.isEmpty) {
+            return 'Please enter first name';
+          }
+          return null;
+        },
+      ),
+      const SizedBox(height: 16),
+      TextFormField(
+        controller: _lastNameController,
+        decoration: const InputDecoration(
+          labelText: 'Last Name',
+          border: OutlineInputBorder(),
+          prefixIcon: Icon(Icons.person_outline),
+        ),
+        textInputAction: TextInputAction.next,
+        validator: (value) {
+          if (value == null || value.isEmpty) {
+            return 'Please enter last name';
+          }
+          return null;
+        },
+      ),
+      const SizedBox(height: 16),
+      TextFormField(
+        controller: _emailController,
+        keyboardType: TextInputType.emailAddress,
+        decoration: const InputDecoration(
+          labelText: 'Email',
+          border: OutlineInputBorder(),
+          prefixIcon: Icon(Icons.email),
+        ),
+        textInputAction: TextInputAction.next,
+        validator: (value) {
+          if (value == null || value.isEmpty) {
+            return 'Please enter email';
+          }
+          if (!RegExp(r'^[\w-\.]+@([\w-]+\.)+[\w-]{2,4}$').hasMatch(value)) {
+            return 'Please enter a valid email';
+          }
+          return null;
+        },
+      ),
+      const SizedBox(height: 16),
+      TextFormField(
+        controller: _passwordController,
+        obscureText: true,
+        decoration: const InputDecoration(
+          labelText: 'Password',
+          border: OutlineInputBorder(),
+          prefixIcon: Icon(Icons.lock),
+        ),
+        textInputAction: TextInputAction.done,
+        validator: (value) {
+          if (value == null || value.isEmpty) {
+            return 'Please enter password';
+          }
+          if (value.length < 8) {
+            return 'Password must be at least 8 characters';
+          }
+          return null;
+        },
+      ),
+      const SizedBox(height: 16),
+      DropdownButtonFormField<String>(
+        value: _selectedStationId,
+        decoration: const InputDecoration(
+          labelText: 'Assign to Police Station',
+          border: OutlineInputBorder(),
+          prefixIcon: Icon(Icons.location_on),
+        ),
+        items: _policeStations.map<DropdownMenuItem<String>>((station) {
+          return DropdownMenuItem<String>(
+            value: station['id'],
+            child: Text(station['name']),
+          );
+        }).toList(),
+        onChanged: (value) {
+          setState(() {
+            _selectedStationId = value;
+          });
+        },
+        validator: (value) {
+          if (value == null || value.isEmpty) {
+            return 'Please select a police station';
+          }
+          return null;
+        },
+      ),
+      if (_isCentralAdmin)
+        Padding(
+          padding: const EdgeInsets.only(top: 8.0),
+          child: Text(
+            'As Central Admin, you can assign to any station',
+            style: TextStyle(
+              color: Colors.blue.shade700,
+              fontSize: 12,
+            ),
+          ),
+        ),
+      if (!_isCentralAdmin && _currentPoliceStationName != null)
+        Padding(
+          padding: const EdgeInsets.only(top: 8.0),
+          child: Text(
+            'Assigned to $_currentPoliceStationName',
+            style: TextStyle(
+              color: Colors.orange.shade700,
+              fontSize: 12,
+            ),
+          ),
+        ),
+    ],
+  );
+}
+
+Widget _buildSubmitButton() {
+  return SizedBox(
+    width: double.infinity,
+    height: 50,
+    child: ElevatedButton(
+      onPressed: _isLoading ? null : _addAdmin,
+      style: ElevatedButton.styleFrom(
+        backgroundColor: const Color(0xFF003366),
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(12),
+        ),
+      ),
+      child: _isLoading
+          ? const SizedBox(
+              width: 24,
+              height: 24,
+              child: CircularProgressIndicator(
+                color: Colors.white,
+                strokeWidth: 3,
+              ),
+            )
+          : const Text(
+              'CREATE ADMIN ACCOUNT',
+              style: TextStyle(
+                fontSize: 16,
+                fontWeight: FontWeight.bold,
+              ),
+            ),
+    ),
+  );
+}
+
+}
