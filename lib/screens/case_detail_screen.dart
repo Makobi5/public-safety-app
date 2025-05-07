@@ -1870,7 +1870,74 @@ Future<void> _downloadCaseReport() async {
                     ),
                   ],
                 ),
-                // Add more rows for other case details
+                // Reporter information
+                pw.SizedBox(height: 5),
+                pw.Row(
+                  mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
+                  children: [
+                    pw.Expanded(
+                      flex: 1,
+                      child: pw.Text('Reporter:',
+                          style: pw.TextStyle(fontWeight: pw.FontWeight.bold)),
+                    ),
+                    pw.Expanded(
+                      flex: 2,
+                      child: pw.Text(_incidentData?.containsKey('reporter') == true ? 
+                          (_incidentData!['reporter'] ?? 'N/A') : 'N/A'),
+                    ),
+                  ],
+                ),
+                // Location information
+                pw.SizedBox(height: 5),
+                pw.Row(
+                  mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
+                  children: [
+                    pw.Expanded(
+                      flex: 1,
+                      child: pw.Text('Location:',
+                          style: pw.TextStyle(fontWeight: pw.FontWeight.bold)),
+                    ),
+                    pw.Expanded(
+                      flex: 2,
+                      child: pw.Text(_incidentData?.containsKey('location') == true ? 
+                          (_incidentData!['location'] ?? 'N/A') : 'N/A'),
+                    ),
+                  ],
+                ),
+                // Police Station
+                pw.SizedBox(height: 5),
+                pw.Row(
+                  mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
+                  children: [
+                    pw.Expanded(
+                      flex: 1,
+                      child: pw.Text('Reported At:',
+                          style: pw.TextStyle(fontWeight: pw.FontWeight.bold)),
+                    ),
+                    pw.Expanded(
+                      flex: 2,
+                      child: pw.Text(_incidentData?.containsKey('reported_at') == true ? 
+                          (_incidentData!['reported_at'] ?? 'N/A') : 'N/A'),
+                    ),
+                  ],
+                ),
+                // Case Status
+                pw.SizedBox(height: 5),
+                pw.Row(
+                  mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
+                  children: [
+                    pw.Expanded(
+                      flex: 1,
+                      child: pw.Text('Case Status:',
+                          style: pw.TextStyle(fontWeight: pw.FontWeight.bold)),
+                    ),
+                    pw.Expanded(
+                      flex: 2,
+                      child: pw.Text(_incidentData?.containsKey('status') == true ? 
+                          (_incidentData!['status'] ?? 'N/A') : 'N/A'),
+                    ),
+                  ],
+                ),
               ],
             ),
           ),
@@ -1895,6 +1962,33 @@ Future<void> _downloadCaseReport() async {
               ],
             ),
           ),
+          // Evidence Section (if available)
+          if (_incidentData?.containsKey('evidence') == true && 
+              _incidentData!['evidence'] != null && 
+              (_incidentData!['evidence'] as List).isNotEmpty)
+            ...[
+              pw.SizedBox(height: 20),
+              pw.Container(
+                padding: const pw.EdgeInsets.all(16),
+                decoration: pw.BoxDecoration(
+                  border: pw.Border.all(),
+                  borderRadius: const pw.BorderRadius.all(pw.Radius.circular(10)),
+                ),
+                child: pw.Column(
+                  crossAxisAlignment: pw.CrossAxisAlignment.start,
+                  children: [
+                    pw.Text('CASE EVIDENCE',
+                        style: pw.TextStyle(
+                            fontSize: 18, fontWeight: pw.FontWeight.bold)),
+                    pw.SizedBox(height: 10),
+                    pw.Text('Evidence files are available in the digital case management system.',
+                        style: pw.TextStyle(fontStyle: pw.FontStyle.italic)),
+                    pw.SizedBox(height: 10),
+                    pw.Text('Number of evidence items: ${(_incidentData!['evidence'] as List).length}'),
+                  ],
+                ),
+              ),
+            ],
         ],
       ),
     );
