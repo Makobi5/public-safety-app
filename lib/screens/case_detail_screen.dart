@@ -27,7 +27,8 @@ import 'package:audioplayers/audioplayers.dart' as audio;
 import 'package:flutter/foundation.dart';
 import 'package:dio/dio.dart';
 // For web audio
-
+import 'package:flutter/foundation.dart' show kIsWeb;
+import 'package:universal_html/html.dart' as html;
 
 
 import 'package:audioplayers/audioplayers.dart';
@@ -1901,7 +1902,59 @@ Future<void> _downloadCaseReport() async {
     // Generate the PDF bytes
     final bytes = await pdf.save();
     
-    // Platform-specific directory handling
+    // Handle downloading based on platform
+    if (kIsWeb) {
+      // For web platform
+      await _downloadFileForWeb(bytes, fileName);
+    } else {
+      // For mobile platforms
+      await _downloadFileForMobile(bytes, fileName);
+    }
+    
+    // Show success message
+    setState(() {
+      _isLoading = false;
+      _successMessage = 'Case report generated!';
+    });
+    
+  } catch (e) {
+    setState(() {
+      _isLoading = false;
+      _errorMessage = 'Error generating case report: $e';
+    });
+    print('Error in _downloadCaseReport: $e');
+  }
+}
+
+// Handle file download for web platforms
+Future<void> _downloadFileForWeb(Uint8List bytes, String fileName) async {
+  try {
+    // Use the 'universal_html' package for web downloads
+    // Make sure to add universal_html: ^2.0.8 to pubspec.yaml
+    final blob = html.Blob([bytes]);
+    final url = html.Url.createObjectUrlFromBlob(blob);
+    final anchor = html.AnchorElement(href: url)
+      ..setAttribute('download', fileName)
+      ..style.display = 'none';
+    
+    html.document.body?.children.add(anchor);
+    
+    // Trigger the download
+    anchor.click();
+    
+    // Clean up
+    html.document.body?.children.remove(anchor);
+    html.Url.revokeObjectUrl(url);
+    
+  } catch (e) {
+    print('Error downloading on web: $e');
+    throw Exception('Web download failed: $e');
+  }
+}
+
+// Handle file download for mobile platforms
+Future<void> _downloadFileForMobile(Uint8List bytes, String fileName) async {
+  try {
     Directory? directory;
     if (Platform.isAndroid) {
       // Use downloads directory for Android
@@ -1922,21 +1975,12 @@ Future<void> _downloadCaseReport() async {
     final file = File('${directory.path}/$fileName');
     await file.writeAsBytes(bytes);
     
-    // Show success message
-    setState(() {
-      _isLoading = false;
-      _successMessage = 'Case report generated!';
-    });
-    
     // Show options to view/share the PDF
     await _showPdfOptions(file, bytes);
     
   } catch (e) {
-    setState(() {
-      _isLoading = false;
-      _errorMessage = 'Error generating case report: $e';
-    });
-    print('Error in _downloadCaseReport: $e');
+    print('Error downloading on mobile: $e');
+    throw Exception('Mobile download failed: $e');
   }
 }
 
