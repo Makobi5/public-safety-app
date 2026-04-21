@@ -15,14 +15,15 @@ import 'screens/edit_profile_screen.dart'; // Import the edit profile screen
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  
+
   // Initialize Supabase
   await Supabase.initialize(
-    url: 'https://hkggxkyzyjptapnqbdlc.supabase.co',
-    anonKey: 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImhrZ2d4a3l6eWpwdGFwbnFiZGxjIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NDE1OTgyNTksImV4cCI6MjA1NzE3NDI1OX0.RSq8Fl40y1PRTl_77UbJWwqbdMIY9mWE7YTH4a-1NsQ',
+    url: 'https://pvurnjrcljxccgxffrpl.supabase.co',
+    anonKey:
+        'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InB2dXJuanJjbGp4Y2NneGZmcnBsIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzY3Nzg3OTgsImV4cCI6MjA5MjM1NDc5OH0.41TgALARLRBNBsOHCYoODN_-bBHR-0IfNY6NA7dXVa0',
     debug: true, // Set to false in production
   );
-  
+
   runApp(const MyApp());
 }
 
@@ -59,16 +60,22 @@ class MyApp extends StatelessWidget {
         '/homepage': (context) => const HomePage(),
         'Homepage': (context) => const HomePage(),
         'SignUp': (context) => const SignUpPage(),
-        'Login': (context) => const LoginPage(isAdminLogin: false), // Specify regular login
-        'AdminLogin': (context) => const LoginPage(isAdminLogin: true), // Admin login route
+        'Login': (context) =>
+            const LoginPage(isAdminLogin: false), // Specify regular login
+        'AdminLogin': (context) =>
+            const LoginPage(isAdminLogin: true), // Admin login route
         '/forgot-password': (context) => const ForgotPasswordPage(),
         'IncidentReport': (context) => const IncidentReportFormPage(),
         '/incident-report': (context) => const IncidentReportFormPage(),
-        'AdminDashboard': (context) => const AdminDashboard(), // Admin dashboard route
-        '/admin-dashboard': (context) => const AdminDashboard(), // Alternative route path
-        'UserDashboard': (context) => const UserDashboard(), // Add user dashboard route
-        '/user-dashboard': (context) => const UserDashboard(), // Alternative route path
-        
+        'AdminDashboard': (context) =>
+            const AdminDashboard(), // Admin dashboard route
+        '/admin-dashboard': (context) =>
+            const AdminDashboard(), // Alternative route path
+        'UserDashboard': (context) =>
+            const UserDashboard(), // Add user dashboard route
+        '/user-dashboard': (context) =>
+            const UserDashboard(), // Alternative route path
+
         // User profile routes - Use the new UserProfileScreen
         'Profile': (context) => const UserProfileScreen(),
         '/profile': (context) => const UserProfileScreen(),
@@ -78,9 +85,11 @@ class MyApp extends StatelessWidget {
         if (settings.name == 'Login') {
           // Check if we're passing parameters to the login page
           final args = settings.arguments;
-          if (args is Map<String, dynamic> && args.containsKey('isAdminLogin')) {
+          if (args is Map<String, dynamic> &&
+              args.containsKey('isAdminLogin')) {
             return MaterialPageRoute(
-              builder: (context) => LoginPage(isAdminLogin: args['isAdminLogin']),
+              builder: (context) =>
+                  LoginPage(isAdminLogin: args['isAdminLogin']),
             );
           }
           // Default to regular login if no params
@@ -130,7 +139,7 @@ class MyApp extends StatelessWidget {
 // This class handles checking authentication and redirecting authenticated users
 class AuthCheckRedirect extends StatefulWidget {
   final Widget child;
-  
+
   const AuthCheckRedirect({Key? key, required this.child}) : super(key: key);
 
   @override
@@ -141,7 +150,7 @@ class _AuthCheckRedirectState extends State<AuthCheckRedirect> {
   bool _isChecking = true;
   bool _isAuthenticated = false;
   bool _isAdmin = false;
-  
+
   @override
   void initState() {
     super.initState();
@@ -150,23 +159,23 @@ class _AuthCheckRedirectState extends State<AuthCheckRedirect> {
       _checkAuth();
     });
   }
-  
+
   Future<void> _checkAuth() async {
     final isAuth = AuthService.isAuthenticated;
     bool isAdmin = false;
-    
+
     if (isAuth) {
       // Check if the user is an admin
       isAdmin = await AuthService.isUserAdmin();
     }
-    
+
     if (mounted) {
       setState(() {
         _isAuthenticated = isAuth;
         _isAdmin = isAdmin;
         _isChecking = false;
       });
-      
+
       // If authenticated, redirect to appropriate page based on role
       if (_isAuthenticated) {
         if (_isAdmin) {
@@ -179,7 +188,7 @@ class _AuthCheckRedirectState extends State<AuthCheckRedirect> {
       }
     }
   }
-  
+
   @override
   Widget build(BuildContext context) {
     if (_isChecking) {
@@ -189,7 +198,7 @@ class _AuthCheckRedirectState extends State<AuthCheckRedirect> {
         ),
       );
     }
-    
+
     return widget.child;
   }
 }
@@ -198,13 +207,13 @@ class _AuthCheckRedirectState extends State<AuthCheckRedirect> {
 class RoleBasedRoute extends StatelessWidget {
   final Widget adminRoute;
   final Widget userRoute;
-  
+
   const RoleBasedRoute({
     Key? key,
     required this.adminRoute,
     required this.userRoute,
   }) : super(key: key);
-  
+
   @override
   Widget build(BuildContext context) {
     return FutureBuilder<bool>(
@@ -216,12 +225,12 @@ class RoleBasedRoute extends StatelessWidget {
             body: Center(child: CircularProgressIndicator()),
           );
         }
-        
+
         // If user is admin, show admin route
         if (snapshot.hasData && snapshot.data == true) {
           return adminRoute;
         }
-        
+
         // Otherwise show user route
         return userRoute;
       },
