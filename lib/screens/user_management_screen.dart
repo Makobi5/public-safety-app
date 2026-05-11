@@ -392,19 +392,60 @@ class _UserManagementScreenState extends State<UserManagementScreen>
     }
   }
 
-  // Reset user password
+  Future<void> _resetPassword(String userId, String newPassword) async {
+    setState(() {
+      _isLoading = true;
+    });
+
+    try {
+      final supabase = Supabase.instance.client;
+
+      // We only call the RPC.
+      // This function handles the permission check AND the password update.
+      final response = await supabase.rpc('secure_reset_password',
+          params: {'user_id_param': userId, 'new_password_param': newPassword});
+
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Password reset successfully via Database RPC'),
+            backgroundColor: Colors.green,
+          ),
+        );
+      }
+    } catch (e) {
+      print('Error in _resetPassword: $e');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Error resetting password: $e'),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isLoading = false;
+        });
+      }
+    }
+  }
+
+// This opens the UI dialog to collect the new password
   Future<void> _showResetPasswordDialog(String userId, String email) async {
     final TextEditingController newPasswordController = TextEditingController();
 
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (context) => AlertDialog(
-        title: const Text('Reset Password'),
+        title: const Text('Reset User Password'),
         content: Column(
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text('Reset password for $email'),
+            Text('Enter a new password for:'),
+            Text(email, style: const TextStyle(fontWeight: FontWeight.bold)),
             const SizedBox(height: 16),
             TextField(
               controller: newPasswordController,
@@ -412,7 +453,7 @@ class _UserManagementScreenState extends State<UserManagementScreen>
               decoration: const InputDecoration(
                 labelText: 'New Password',
                 border: OutlineInputBorder(),
-                hintText: 'Enter new password',
+                hintText: 'Minimum 6 characters',
               ),
             ),
           ],
@@ -423,18 +464,27 @@ class _UserManagementScreenState extends State<UserManagementScreen>
             child: const Text('Cancel'),
           ),
           ElevatedButton(
-            onPressed: () => Navigator.of(context).pop(true),
+            onPressed: () {
+              if (newPasswordController.text.length < 6) {
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(content: Text('Password too short')),
+                );
+                return;
+              }
+              Navigator.of(context).pop(true);
+            },
             style: ElevatedButton.styleFrom(
               backgroundColor: const Color(0xFF003366),
             ),
-            child: const Text('Reset Password'),
+            child: const Text('Confirm Reset'),
           ),
         ],
       ),
     );
 
+    // If the user clicked "Confirm Reset" and typed a password
     if (confirmed == true && newPasswordController.text.isNotEmpty) {
-      await _resetPassword(userId, newPasswordController.text);
+      await _resetPassword(userId, newPasswordController.text.trim());
     }
 
     newPasswordController.dispose();
@@ -493,53 +543,6 @@ class _UserManagementScreenState extends State<UserManagementScreen>
         return Colors.blue.shade700;
       default:
         return Colors.grey.shade700;
-    }
-  }
-
-  Future<void> _resetPassword(String userId, String newPassword) async {
-    setState(() {
-      _isLoading = true;
-    });
-
-    try {
-      final supabase = Supabase.instance.client;
-
-      // Step 1: Check if the user has permission to reset passwords
-      final permissionResult = await supabase.rpc('secure_reset_password',
-          params: {'user_id_param': userId, 'new_password_param': newPassword});
-
-      print('Permission check result: $permissionResult');
-
-      // Step 2: Call the Edge Function to actually reset the password
-      final response = await supabase.functions.invoke(
-        'reset-password',
-        body: {'user_id': userId, 'new_password': newPassword},
-      );
-
-      // Get the response data and check for errors in the data
-      final data = response.data;
-      if (data != null && data['error'] != null) {
-        throw Exception(data['error']);
-      }
-
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Password reset successfully'),
-          backgroundColor: Colors.green,
-        ),
-      );
-    } catch (e) {
-      print('Error in _resetPassword: $e');
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('Error resetting password: $e'),
-          backgroundColor: Colors.red,
-        ),
-      );
-    } finally {
-      setState(() {
-        _isLoading = false;
-      });
     }
   }
 
