@@ -101,39 +101,52 @@ class _UserManagementScreenState extends State<UserManagementScreen>
     });
 
     try {
-      // Create a new admin user
+      // Create a new admin user data
       final userData = {
         'first_name': _firstNameController.text.trim(),
         'last_name': _lastNameController.text.trim(),
-        'role': 'admin', // Set role as admin
+        'role': 'admin',
       };
 
-      // Call a special method to create admin account
+      // Call the service to create the account
       await AuthService.createAdminAccount(
         email: _emailController.text.trim(),
         password: _passwordController.text,
         userData: userData,
       );
 
-      setState(() {
-        _successMessage = 'Admin account created successfully!';
-        // Clear form fields
-        _emailController.clear();
-        _passwordController.clear();
-        _firstNameController.clear();
-        _lastNameController.clear();
-      });
+      // 1. Clear form fields
+      _emailController.clear();
+      _passwordController.clear();
+      _firstNameController.clear();
+      _lastNameController.clear();
 
-      // Refresh user list
-      _fetchUsers();
+      // 2. Show success snackbar (since we are leaving this screen)
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Admin account created successfully!'),
+            backgroundColor: Colors.green,
+            duration: Duration(seconds: 3),
+          ),
+        );
+      }
+
+      // 3. Switch back to the "User List" tab (Index 0)
+      _tabController.animateTo(0);
+
+      // 4. Refresh the user list data
+      await _fetchUsers();
     } catch (e) {
       setState(() {
         _errorMessage = 'Error creating admin account: ${e.toString()}';
       });
     } finally {
-      setState(() {
-        _isLoading = false;
-      });
+      if (mounted) {
+        setState(() {
+          _isLoading = false;
+        });
+      }
     }
   }
 
