@@ -90,63 +90,47 @@ class _UserManagementScreenState extends State<UserManagementScreen>
     }
   }
 
-  // Add new admin
   Future<void> _addAdmin() async {
     if (!_formKey.currentState!.validate()) return;
 
-    setState(() {
-      _isLoading = true;
-      _errorMessage = null;
-      _successMessage = null;
-    });
+    setState(() => _isLoading = true);
 
     try {
-      // Create a new admin user data
-      final userData = {
-        'first_name': _firstNameController.text.trim(),
-        'last_name': _lastNameController.text.trim(),
-        'role': 'admin',
-      };
-
-      // Call the service to create the account
       await AuthService.createAdminAccount(
         email: _emailController.text.trim(),
         password: _passwordController.text,
-        userData: userData,
+        userData: {
+          'first_name': _firstNameController.text.trim(),
+          'last_name': _lastNameController.text.trim(),
+          'role': 'admin',
+        },
       );
 
-      // 1. Clear form fields
+      // Clear fields
       _emailController.clear();
       _passwordController.clear();
       _firstNameController.clear();
       _lastNameController.clear();
 
-      // 2. Show success snackbar (since we are leaving this screen)
       if (mounted) {
+        // 1. Show message
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
-            content: Text('Admin account created successfully!'),
-            backgroundColor: Colors.green,
-            duration: Duration(seconds: 3),
-          ),
+              content: Text('Admin created!'), backgroundColor: Colors.green),
         );
-      }
 
-      // 3. Switch back to the "User List" tab (Index 0)
-      _tabController.animateTo(0);
+        // 2. Force the Tab Controller to Index 0 (User List)
+        _tabController.animateTo(0);
 
-      // 4. Refresh the user list data
-      await _fetchUsers();
-    } catch (e) {
-      setState(() {
-        _errorMessage = 'Error creating admin account: ${e.toString()}';
-      });
-    } finally {
-      if (mounted) {
-        setState(() {
-          _isLoading = false;
+        // 3. Wait a tiny bit then refresh the list
+        Future.delayed(const Duration(milliseconds: 300), () {
+          _fetchUsers();
         });
       }
+    } catch (e) {
+      setState(() => _errorMessage = e.toString());
+    } finally {
+      if (mounted) setState(() => _isLoading = false);
     }
   }
 
