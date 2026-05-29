@@ -225,72 +225,51 @@ class _IncidentReportFormPageState extends State<IncidentReportFormPage> {
     return true;
   }
 
-  Future<void> _fetchPoliceStations(String districtName) async {
+  Future<void> _fetchPoliceStations(double lat, double lon) async {
     setState(() => _isLoadingStations = true);
 
     try {
       final supabase = Supabase.instance.client;
 
-      // 1. Get district with location data
-      final districtResponse = await supabase
-          .from('districts')
-          .select('id, lat, lon')
-          .eq('name', districtName)
-          .maybeSingle();
+      // 1. DYNAMIC SEARCH: Call the database to find the closest stations
+      // This uses the RPC function we created in the SQL editor
+      final List<dynamic> response = await supabase.rpc(
+        'find_nearest_stations',
+        params: {
+          'user_lat': lat,
+          'user_lon': lon,
+        },
+      );
 
-      if (districtResponse == null) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('$districtName district data not found')),
-        );
-        return;
-      }
-
-      // 2. Get all police stations in this district
-      final stationsResponse = await supabase
-          .from('police_stations')
-          .select('id, name, address, lat, lon, coverage_status')
-          .eq('district_id', districtResponse['id']);
-
-      // 3. Process stations data
-      final stations = (stationsResponse as List)
+      // 2. Map the database results to the UI list
+      final stations = response
           .map((station) => {
                 'id': station['id'],
                 'name': station['name'] ?? 'Unknown Station',
                 'address': station['address'] ?? 'Address not available',
-                'lat': station['lat'],
-                'lon': station['lon'],
-                'coverage_status': station['coverage_status'] ?? 0.0,
+                'lat': station['latitude'], // Use 'latitude' from your DB dump
+                'lon':
+                    station['longitude'], // Use 'longitude' from your DB dump
+                'distance': _calculateDistance(
+                    lat, lon, station['latitude'], station['longitude']),
               })
           .toList();
-
-      // 4. Calculate distances if we have location data
-      if (_latitude != null && _longitude != null) {
-        for (final station in stations) {
-          if (station['lat'] != null && station['lon'] != null) {
-            station['distance'] = _calculateDistance(
-                _latitude!, _longitude!, station['lat'], station['lon']);
-          }
-        }
-        // Sort by distance if available
-        stations.sort((a, b) => (a['distance'] ?? double.infinity)
-            .compareTo(b['distance'] ?? double.infinity));
-      }
 
       setState(() {
         _policeStations = stations;
         if (stations.isNotEmpty) {
+          // Auto-select the closest one
           _selectedPoliceStationId = stations[0]['id'];
           _selectedPoliceStationName = stations[0]['name'];
+        } else {
+          _selectedPoliceStationId = null;
+          _selectedPoliceStationName = null;
         }
       });
     } catch (e) {
       debugPrint('Police station fetch error: $e');
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content:
-              Text('Error loading stations: ${e.toString().split(':').first}'),
-          duration: const Duration(seconds: 3),
-        ),
+        SnackBar(content: Text('Error finding nearby stations: $e')),
       );
     } finally {
       setState(() => _isLoadingStations = false);
@@ -382,45 +361,64 @@ class _IncidentReportFormPageState extends State<IncidentReportFormPage> {
 //     setState(() => _isCapturingLocation = false);
 //   }
 // }
-// In _IncidentReportFormPageState class
   Future<void> _getCurrentLocation() async {
-    // Check location permissions first
     bool hasPermission = await _handleLocationPermission();
-    if (!hasPermission) {
-      // If no permission, exit early
-      return;
-    }
+    if (!hasPermission) return;
 
     setState(() => _isCapturingLocation = true);
 
     try {
-      // Make sure to use a reasonable timeout
+      // Step 1: Try to get last known position as a quick reference (for debug only)
+      Position? lastKnown = await Geolocator.getLastKnownPosition();
+      if (lastKnown != null) {
+        debugPrint(
+            'Last known position: ${lastKnown.latitude}, ${lastKnown.longitude}');
+      }
+
+      // Step 2: Force a FRESH GPS fix — longer timeout, high accuracy
       Position position = await Geolocator.getCurrentPosition(
-          desiredAccuracy: LocationAccuracy.best,
-          timeLimit: const Duration(seconds: 10));
+        desiredAccuracy: LocationAccuracy.bestForNavigation,
+        forceAndroidLocationManager:
+            false, // use Google Fused Location (more accurate)
+        timeLimit:
+            const Duration(seconds: 30), // give GPS time to get a real fix
+      );
+
+      debugPrint(
+          'Fresh GPS position: ${position.latitude}, ${position.longitude}');
+      debugPrint('Accuracy: ${position.accuracy} meters');
+
+      // Step 3: Reject if accuracy is too poor (e.g. cached/tower-based fix)
+      if (position.accuracy > 500) {
+        debugPrint(
+            'Position accuracy too low (${position.accuracy}m), retrying...');
+        // Try once more with a longer wait
+        position = await Geolocator.getCurrentPosition(
+          desiredAccuracy: LocationAccuracy.high,
+          timeLimit: const Duration(seconds: 45),
+        );
+      }
 
       setState(() {
-        _currentPosition = position; // Make sure to set this
+        _currentPosition = position;
         _latitude = position.latitude;
         _longitude = position.longitude;
       });
 
       await _getAddressFromOSM();
 
-      if (!_locationAddress.toLowerCase().contains('kabale')) {
+      if (_detectedDistrict == null ||
+          _detectedDistrict == 'Unknown District') {
+        debugPrint('OSM mapping failed, applying Uganda-specific fallback');
         _applyUgandaSpecificMapping();
       }
 
-      // After location is set, fetch police stations for the district
-      if (_detectedDistrict != null) {
-        await _fetchPoliceStations(_detectedDistrict!);
-      }
+      await _fetchPoliceStations(position.latitude, position.longitude);
     } catch (e) {
-      print('Location error: $e');
+      debugPrint('Location error: $e');
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('Error capturing location: ${e.toString()}')),
       );
-      // Fallback to local mapping
       _applyUgandaSpecificMapping();
     } finally {
       setState(() => _isCapturingLocation = false);
@@ -803,6 +801,19 @@ class _IncidentReportFormPageState extends State<IncidentReportFormPage> {
                   const SizedBox(height: 4),
                   Text(
                       'Coordinates: ${_latitude?.toStringAsFixed(6)}, ${_longitude?.toStringAsFixed(6)}'),
+                  if (_currentPosition != null &&
+                      _currentPosition!.accuracy > 0)
+                    Text(
+                      'GPS Accuracy: ±${_currentPosition!.accuracy.toStringAsFixed(0)}m',
+                      style: TextStyle(
+                        fontSize: 12,
+                        color: _currentPosition!.accuracy <= 50
+                            ? Colors.green.shade700
+                            : _currentPosition!.accuracy <= 200
+                                ? Colors.orange.shade700
+                                : Colors.red.shade700,
+                      ),
+                    ),
                 ] else ...[
                   const Text(
                       'Please capture your location to see nearby police stations'),
